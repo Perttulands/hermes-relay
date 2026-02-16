@@ -1,0 +1,14 @@
+# Build
+/relay
+*.exe
+
+# Logs
+ralph-*.log
+*.log
+
+# Environment
+.env
+.env.*
+
+# Test artifacts
+/tmp/
