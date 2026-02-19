@@ -18,6 +18,11 @@ relay watch --agent luna
 relay watch --agent luna --loop
 ```
 
+Commands that need agent identity resolve it in this order:
+1. `--agent <name>`
+2. `RELAY_AGENT`
+3. Hostname fallback
+
 ## Build
 
 ```bash

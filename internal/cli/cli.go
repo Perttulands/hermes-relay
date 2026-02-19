@@ -881,6 +881,10 @@ GLOBAL FLAGS:
   --dir <path>       Data directory (default: ~/.relay)
   --json             Output as JSON (for scripting)
   --quiet            Suppress non-essential output
+
+NOTES:
+  Commands that act as "you" (send/read/inbox/watch/heartbeat/reserve/release/cmd)
+  use --agent, then RELAY_AGENT, then hostname.
 `)
 }
 
