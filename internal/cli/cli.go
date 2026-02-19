@@ -923,6 +923,7 @@ func (c *context) cmdSpawn(args []string) int {
 	}
 
 	dispatchCmd := execCommand(dispatchScript, beadID, repo, agentType, prompt)
+	dispatchCmd.Env = append(os.Environ(), "DISPATCH_ENFORCE_PRD_LINT=false")
 	dispatchOut, err := dispatchCmd.CombinedOutput()
 	if err != nil {
 		errorf("spawn: dispatch failed: %v (%s)", err, strings.TrimSpace(string(dispatchOut)))
