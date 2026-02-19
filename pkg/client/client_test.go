@@ -167,3 +167,42 @@ func TestWatchReceivesNewMessage(t *testing.T) {
 		t.Fatal("watch timed out")
 	}
 }
+
+func TestReadFilterByFrom(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "athena", "sender-a", "sender-b")
+
+	t.Setenv("RELAY_AGENT", "sender-a")
+	a, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Send("athena", "from-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("RELAY_AGENT", "sender-b")
+	b, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Send("athena", "from-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("RELAY_AGENT", "athena")
+	receiver, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := receiver.Read(ReadOpts{From: "sender-a", Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].From != "sender-a" || msgs[0].Body != "from-a" {
+		t.Fatalf("unexpected message: %+v", msgs[0])
+	}
+}

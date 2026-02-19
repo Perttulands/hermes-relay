@@ -26,6 +26,7 @@ Commands that need agent identity resolve it in this order:
 ## Go Client
 
 Relay also ships a programmatic client in `pkg/client`.
+`NewClient` resolves the current agent from `RELAY_AGENT` first, then hostname.
 
 ```go
 package main
