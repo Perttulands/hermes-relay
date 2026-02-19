@@ -2,7 +2,9 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,6 +29,15 @@ func setup(t *testing.T) (string, func()) {
 func run(args ...string) int {
 	full := append([]string{"relay"}, args...)
 	return Run(full)
+}
+
+func withMockExec(t *testing.T, fn func(name string, args ...string) *exec.Cmd) {
+	t.Helper()
+	orig := execCommand
+	execCommand = fn
+	t.Cleanup(func() {
+		execCommand = orig
+	})
 }
 
 func TestVersion(t *testing.T) {
@@ -495,6 +506,115 @@ func TestParseSince(t *testing.T) {
 	s = parseSince("2026-02-16")
 	if s.IsZero() {
 		t.Error("parseSince(date) returned zero")
+	}
+}
+
+func TestSpawnRequiresFlags(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	if code := run("spawn"); code != 1 {
+		t.Fatalf("expected exit 1 for missing required flags, got %d", code)
+	}
+}
+
+func TestSpawnSuccess(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
+	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_SCRIPT", dispatch)
+
+	repo := t.TempDir()
+	var calls []string
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		switch filepath.Base(name) {
+		case "bd":
+			return exec.Command("bash", "-lc", "echo '✓ Created issue: athena-xyz'")
+		default:
+			return exec.Command("bash", "-lc", "exit 0")
+		}
+	})
+
+	code := run("spawn", "--repo", repo, "--agent", "codex", "--prompt", "Implement feature X")
+	if code != 0 {
+		t.Fatalf("spawn failed with code %d", code)
+	}
+	if len(calls) < 2 {
+		t.Fatalf("expected bd + dispatch calls, got %v", calls)
+	}
+	if !strings.Contains(calls[0], "create --title Implement feature X --priority 1") {
+		t.Fatalf("unexpected bd call: %s", calls[0])
+	}
+	if !strings.Contains(calls[1], fmt.Sprintf("athena-xyz %s codex Implement feature X", repo)) {
+		t.Fatalf("unexpected dispatch call: %s", calls[1])
+	}
+}
+
+func TestSpawnWaitAndNotify(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
+	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_SCRIPT", dispatch)
+
+	origPoll := spawnPollInterval
+	origTimeout := spawnPollTimeout
+	spawnPollInterval = 10 * time.Millisecond
+	spawnPollTimeout = 500 * time.Millisecond
+	t.Cleanup(func() {
+		spawnPollInterval = origPoll
+		spawnPollTimeout = origTimeout
+	})
+
+	repo := t.TempDir()
+	resultsDir := filepath.Join(repo, "state", "results")
+	if err := os.MkdirAll(resultsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		_ = os.WriteFile(filepath.Join(resultsDir, "athena-wait.json"), []byte(`{"ok":true}`), 0o644)
+	}()
+
+	var calls []string
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if filepath.Base(name) == "bd" {
+			return exec.Command("bash", "-lc", "echo '✓ Created issue: athena-wait'")
+		}
+		return exec.Command("bash", "-lc", "exit 0")
+	})
+
+	code := run(
+		"spawn",
+		"--repo", repo,
+		"--agent", "claude:opus",
+		"--prompt", "Design system Y",
+		"--wait",
+		"--notify", "athena",
+	)
+	if code != 0 {
+		t.Fatalf("spawn --wait --notify failed with code %d", code)
+	}
+
+	foundNotify := false
+	for _, c := range calls {
+		if strings.Contains(c, "relay send athena Spawned task athena-wait completed") {
+			foundNotify = true
+			break
+		}
+	}
+	if !foundNotify {
+		t.Fatalf("expected notify call, got %v", calls)
 	}
 }
 

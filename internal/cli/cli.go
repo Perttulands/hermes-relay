@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +15,19 @@ import (
 )
 
 const Version = "0.1.0"
+
+var (
+	spawnBeadIDRe      = regexp.MustCompile(`Created issue:\s*([^\s]+)`)
+	spawnFallbackIDRe  = regexp.MustCompile(`\b([A-Za-z0-9]+-[A-Za-z0-9][A-Za-z0-9-]*)\b`)
+	spawnPollInterval  = 2 * time.Second
+	spawnPollTimeout   = 30 * time.Minute
+	validSpawnAgentSet = map[string]bool{
+		"codex":         true,
+		"claude:opus":   true,
+		"claude:sonnet": true,
+		"claude:haiku":  true,
+	}
+)
 
 // Run is the main entry point. Returns exit code.
 func Run(args []string) int {
@@ -99,6 +113,8 @@ func Run(args []string) int {
 		return ctx.cmdCmd(cmdArgs)
 	case "gc":
 		return ctx.cmdGC(cmdArgs)
+	case "spawn":
+		return ctx.cmdSpawn(cmdArgs)
 	default:
 		errorf("unknown command: %s", cmd)
 		usage()
@@ -855,6 +871,149 @@ func (c *context) cmdGC(args []string) int {
 	return 0
 }
 
+func (c *context) cmdSpawn(args []string) int {
+	flags := parseFlags(args)
+	repo := strings.TrimSpace(flags["repo"])
+	agentType := strings.TrimSpace(flags["agent"])
+	if agentType == "" && validSpawnAgentSet[c.agent] {
+		agentType = c.agent
+	}
+	prompt := strings.TrimSpace(flags["prompt"])
+	title := strings.TrimSpace(flags["title"])
+	wait := flagBool(args, "--wait")
+	notify := strings.TrimSpace(flags["notify"])
+
+	if repo == "" || agentType == "" || prompt == "" {
+		errorf("usage: relay spawn --repo <path> --agent <type> --prompt <text> [--title <text>] [--wait] [--notify <agent>]")
+		return 1
+	}
+	if !validSpawnAgentSet[agentType] {
+		errorf("spawn: invalid --agent %q (expected codex|claude:opus|claude:sonnet|claude:haiku)", agentType)
+		return 1
+	}
+	if title == "" {
+		title = prompt
+		r := []rune(title)
+		if len(r) > 50 {
+			title = string(r[:50])
+		}
+	}
+
+	bdBin := resolveBDBinary()
+	createCmd := execCommand(bdBin, "create", "--title", title, "--priority", "1")
+	createCmd.Dir = repo
+	createOut, err := createCmd.CombinedOutput()
+	if err != nil {
+		errorf("spawn: bd create failed: %v (%s)", err, strings.TrimSpace(string(createOut)))
+		return 1
+	}
+
+	beadID := extractSpawnBeadID(string(createOut))
+	if beadID == "" {
+		errorf("spawn: could not parse bead id from bd output: %s", strings.TrimSpace(string(createOut)))
+		return 1
+	}
+
+	fmt.Printf("spawned %s\n", beadID)
+
+	dispatchScript, err := resolveDispatchScript()
+	if err != nil {
+		errorf("spawn: %v", err)
+		return 1
+	}
+
+	dispatchCmd := execCommand(dispatchScript, beadID, repo, agentType, prompt)
+	dispatchOut, err := dispatchCmd.CombinedOutput()
+	if err != nil {
+		errorf("spawn: dispatch failed: %v (%s)", err, strings.TrimSpace(string(dispatchOut)))
+		return 1
+	}
+
+	if wait {
+		result, waitErr := waitForSpawnResult(repo, beadID)
+		if waitErr != nil {
+			errorf("spawn: wait failed: %v", waitErr)
+			return 1
+		}
+		if strings.TrimSpace(result) != "" {
+			fmt.Println(result)
+		}
+		if notify != "" {
+			msg := fmt.Sprintf("Spawned task %s completed", beadID)
+			notifyCmd := execCommand("relay", "send", notify, msg)
+			notifyOut, notifyErr := notifyCmd.CombinedOutput()
+			if notifyErr != nil {
+				errorf("spawn: notify failed: %v (%s)", notifyErr, strings.TrimSpace(string(notifyOut)))
+				return 1
+			}
+		}
+	}
+
+	return 0
+}
+
+func resolveBDBinary() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidate := filepath.Join(home, "go", "bin", "bd")
+		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
+			return candidate
+		}
+	}
+	return "bd"
+}
+
+func extractSpawnBeadID(output string) string {
+	if m := spawnBeadIDRe.FindStringSubmatch(output); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	if m := spawnFallbackIDRe.FindStringSubmatch(output); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+func resolveDispatchScript() (string, error) {
+	if fromEnv := strings.TrimSpace(os.Getenv("DISPATCH_SCRIPT")); fromEnv != "" {
+		if st, err := os.Stat(fromEnv); err == nil && !st.IsDir() {
+			return fromEnv, nil
+		}
+		return "", fmt.Errorf("dispatch script not found at DISPATCH_SCRIPT=%s", fromEnv)
+	}
+
+	candidates := []string{
+		"/home/chrote/athena/workspace/scripts/dispatch.sh",
+	}
+
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidates = append(candidates, filepath.Join(home, "athena", "workspace", "scripts", "dispatch.sh"))
+	}
+
+	for _, p := range candidates {
+		if st, statErr := os.Stat(p); statErr == nil && !st.IsDir() {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("dispatch script not found (set DISPATCH_SCRIPT)")
+}
+
+func waitForSpawnResult(repo, beadID string) (string, error) {
+	resultPath := filepath.Join(repo, "state", "results", beadID+".json")
+	deadline := time.Now().Add(spawnPollTimeout)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(resultPath)
+		if err == nil {
+			return string(data), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		time.Sleep(spawnPollInterval)
+	}
+	return "", fmt.Errorf("timed out waiting for result: %s", resultPath)
+}
+
 // Helper functions
 
 func usage() {
@@ -870,6 +1029,7 @@ COMMANDS:
   relay reservations [flags]          List active reservations
   relay wake [text]                   Wake Athena (OpenClaw gateway)
   relay cmd <session> <command>       Inject a slash command into a session
+  relay spawn [flags]                 Spawn an agent task via dispatch
   relay status                        Show all agents, heartbeats, reservations
   relay register <name> [flags]       Register agent identity
   relay heartbeat                     Update agent heartbeat
@@ -908,7 +1068,7 @@ func parseFlags(args []string) map[string]string {
 			if key == "broadcast" || key == "wake" || key == "check" || key == "force" ||
 				key == "shared" || key == "all" || key == "unread" || key == "mark-read" ||
 				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
-				key == "loop" {
+				key == "loop" || key == "wait" {
 				continue
 			}
 			flags[key] = args[i+1]
@@ -935,7 +1095,7 @@ func flagPositional(args []string) []string {
 		"--broadcast": true, "--wake": true, "--check": true, "--force": true,
 		"--shared": true, "--all": true, "--unread": true, "--mark-read": true,
 		"--dry-run": true, "--expired-only": true, "--expired": true, "--tail": true,
-		"--json": true, "--quiet": true, "--loop": true,
+		"--json": true, "--quiet": true, "--loop": true, "--wait": true,
 	}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
