@@ -68,6 +68,30 @@ func main() {
 go build ./...
 ```
 
+## User Service (systemd --user)
+
+Relay includes a user-level systemd service unit at `deployment/relay.service`.
+It runs:
+
+```bash
+relay serve --addr :9292
+```
+
+Install and start it for your user:
+
+```bash
+./install-service.sh
+```
+
+Useful commands:
+
+```bash
+systemctl --user status relay.service
+systemctl --user restart relay.service
+journalctl --user -u relay.service -f
+systemctl --user disable --now relay.service
+```
+
 ## Dependencies
 
 ### Beads (bd CLI)
