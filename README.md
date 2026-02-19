@@ -2,6 +2,22 @@
 
 Relay is the agent messaging backbone for the Agora system. It handles inter-agent communication, command routing, and message delivery.
 
+## Quick CLI
+
+```bash
+# Register an agent
+relay register luna
+
+# Send and read messages
+relay send luna "ship it" --agent iris
+relay read --agent luna
+relay inbox --agent luna   # alias for read
+
+# Block until new message(s) arrive
+relay watch --agent luna
+relay watch --agent luna --loop
+```
+
 ## Build
 
 ```bash

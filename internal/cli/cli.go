@@ -66,10 +66,10 @@ func Run(args []string) int {
 	}
 
 	ctx := &context{
-		store:  s,
-		agent:  agent,
-		json:   globalFlags.jsonOut,
-		quiet:  globalFlags.quiet,
+		store: s,
+		agent: agent,
+		json:  globalFlags.jsonOut,
+		quiet: globalFlags.quiet,
 	}
 
 	switch cmd {
@@ -85,6 +85,8 @@ func Run(args []string) int {
 		return ctx.cmdRead(cmdArgs)
 	case "status":
 		return ctx.cmdStatus(cmdArgs)
+	case "watch":
+		return ctx.cmdWatch(cmdArgs)
 	case "reserve":
 		return ctx.cmdReserve(cmdArgs)
 	case "release":
@@ -383,9 +385,9 @@ func (c *context) cmdStatus(args []string) int {
 
 	if c.json {
 		type statusJSON struct {
-			Agents       []core.AgentStatus  `json:"agents"`
-			Reservations []core.Reservation  `json:"reservations"`
-			Commands     []core.Command      `json:"commands"`
+			Agents       []core.AgentStatus `json:"agents"`
+			Reservations []core.Reservation `json:"reservations"`
+			Commands     []core.Command     `json:"commands"`
 		}
 		var agentStatuses []core.AgentStatus
 		for _, name := range agents {
@@ -475,6 +477,40 @@ func (c *context) cmdStatus(args []string) int {
 	}
 
 	return 0
+}
+
+func (c *context) cmdWatch(args []string) int {
+	loop := flagBool(args, "--loop")
+	var offset int64
+
+	for {
+		msgs, newOffset, err := c.store.WatchInbox(c.agent, offset)
+		if err != nil {
+			errorf("watch: %v", err)
+			return 1
+		}
+		offset = newOffset
+
+		for _, m := range msgs {
+			if c.json {
+				outputJSON(m)
+				continue
+			}
+			ts, err := time.Parse(time.RFC3339, m.TS)
+			if err != nil {
+				fmt.Printf("%s  %-16s %s\n", "now", m.From, m.Subject)
+			} else {
+				fmt.Printf("%s  %-16s %s\n", formatAge(time.Since(ts)), m.From, m.Subject)
+			}
+			if m.Body != m.Subject && m.Body != "" {
+				fmt.Printf("    %s\n", m.Body)
+			}
+		}
+
+		if !loop {
+			return 0
+		}
+	}
 }
 
 func (c *context) cmdReserve(args []string) int {
@@ -828,6 +864,7 @@ COMMANDS:
   relay send <to> <message>           Send a message to an agent's inbox
   relay read [flags]                  Read messages from your inbox
   relay inbox [flags]                 Alias for read
+  relay watch [--loop]                Block until new inbox message(s) arrive
   relay reserve <pattern> [flags]     Reserve file paths
   relay release <pattern>             Release a file reservation
   relay reservations [flags]          List active reservations
@@ -866,7 +903,8 @@ func parseFlags(args []string) map[string]string {
 			// Skip boolean flags
 			if key == "broadcast" || key == "wake" || key == "check" || key == "force" ||
 				key == "shared" || key == "all" || key == "unread" || key == "mark-read" ||
-				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" {
+				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
+				key == "loop" {
 				continue
 			}
 			flags[key] = args[i+1]
@@ -893,7 +931,7 @@ func flagPositional(args []string) []string {
 		"--broadcast": true, "--wake": true, "--check": true, "--force": true,
 		"--shared": true, "--all": true, "--unread": true, "--mark-read": true,
 		"--dry-run": true, "--expired-only": true, "--expired": true, "--tail": true,
-		"--json": true, "--quiet": true,
+		"--json": true, "--quiet": true, "--loop": true,
 	}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {

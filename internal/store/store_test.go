@@ -238,6 +238,53 @@ func TestUnreadCursor(t *testing.T) {
 	}
 }
 
+func TestWatchInbox(t *testing.T) {
+	d := tempDir(t)
+	if err := d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Register(core.AgentMeta{Name: "bob", RegisteredAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		msgs []core.Message
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		msgs, _, err := d.WatchInbox("alice", 0)
+		ch <- result{msgs: msgs, err: err}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if err := d.Send(core.Message{
+		ID:      core.NewULID(),
+		TS:      time.Now().UTC().Format(time.RFC3339),
+		From:    "bob",
+		To:      "alice",
+		Subject: "watch-test",
+		Body:    "watch-test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("watch error: %v", got.err)
+		}
+		if len(got.msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(got.msgs))
+		}
+		if got.msgs[0].Subject != "watch-test" {
+			t.Fatalf("unexpected message subject: %q", got.msgs[0].Subject)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watch timed out waiting for message")
+	}
+}
+
 func TestPartialLineToleranceDuringRead(t *testing.T) {
 	d := tempDir(t)
 	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
@@ -422,10 +469,10 @@ func TestPatternsOverlap(t *testing.T) {
 		{"src/**", "src/auth/login.go", true},
 		{"src/a/*", "src/b/*", false},
 		{"*.go", "src/main.go", false},       // different prefix, no ** in either
-		{"**", "anything", true},              // ** overlaps everything
-		{"src/auth/**", "src/auth/**", true},  // exact match
-		{"src/auth/**", "src/api/**", false},  // different subtrees
-		{"*.go", "*.go", true},                // same pattern
+		{"**", "anything", true},             // ** overlaps everything
+		{"src/auth/**", "src/auth/**", true}, // exact match
+		{"src/auth/**", "src/api/**", false}, // different subtrees
+		{"*.go", "*.go", true},               // same pattern
 	}
 	for _, tc := range cases {
 		got := patternsOverlap(tc.a, tc.b)

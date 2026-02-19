@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Perttulands/relay/internal/core"
 )
@@ -161,6 +162,34 @@ func TestInboxAlias(t *testing.T) {
 	code := run("inbox")
 	if code != 0 {
 		t.Fatalf("inbox alias failed with code %d", code)
+	}
+}
+
+func TestWatchReceivesMessage(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "watcher")
+	run("register", "sender")
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run("watch", "--agent", "watcher")
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	sendCode := run("send", "watcher", "watch message", "--agent", "sender")
+	if sendCode != 0 {
+		t.Fatalf("send failed with code %d", sendCode)
+	}
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("watch failed with code %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watch timed out")
 	}
 }
 

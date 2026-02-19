@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Perttulands/relay/internal/core"
+	"github.com/fsnotify/fsnotify"
 )
 
 // Dir is the relay data directory (default ~/.relay).
@@ -180,6 +181,107 @@ func (d *Dir) ReadInbox(agent string, opts ReadOpts) ([]core.Message, error) {
 	}
 
 	return msgs, nil
+}
+
+// WatchInbox blocks until new messages are appended to an inbox after offset.
+// It returns all complete messages written since that offset and the new offset.
+func (d *Dir) WatchInbox(agent string, offset int64) ([]core.Message, int64, error) {
+	agentDir := d.AgentDir(agent)
+	if _, err := os.Stat(agentDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, offset, fmt.Errorf("agent %q not registered", agent)
+		}
+		return nil, offset, err
+	}
+
+	inbox := filepath.Join(agentDir, "inbox.jsonl")
+	f, err := os.OpenFile(inbox, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, offset, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, offset, err
+	}
+
+	// If caller starts from zero but file already contains history, watch only new writes.
+	if offset == 0 {
+		if info, err := os.Stat(inbox); err == nil {
+			offset = info.Size()
+		}
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, offset, err
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(inbox); err != nil {
+		return nil, offset, err
+	}
+
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil, offset, fmt.Errorf("watcher closed")
+			}
+			if event.Name != inbox {
+				continue
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+				continue
+			}
+
+			msgs, newOffset, err := readMessagesSince(inbox, offset)
+			if err != nil {
+				return nil, offset, err
+			}
+			offset = newOffset
+			if len(msgs) > 0 {
+				return msgs, offset, nil
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil, offset, fmt.Errorf("watcher closed")
+			}
+			return nil, offset, err
+		}
+	}
+}
+
+func readMessagesSince(inbox string, offset int64) ([]core.Message, int64, error) {
+	data, err := os.ReadFile(inbox)
+	if err != nil {
+		return nil, offset, err
+	}
+	if offset > int64(len(data)) {
+		offset = int64(len(data))
+	}
+
+	tail := data[offset:]
+	lines := strings.Split(string(tail), "\n")
+
+	var msgs []core.Message
+	var consumed int64
+	for i, line := range lines {
+		// ignore final incomplete line
+		if i == len(lines)-1 && line != "" {
+			break
+		}
+		line = strings.TrimSpace(line)
+		consumed += int64(len(lines[i])) + 1
+		if line == "" {
+			continue
+		}
+		var msg core.Message
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+		msgs = append(msgs, msg)
+	}
+
+	return msgs, offset + consumed, nil
 }
 
 // ReadOpts controls message filtering.
