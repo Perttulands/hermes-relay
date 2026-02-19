@@ -134,6 +134,42 @@ func TestSendAndRead(t *testing.T) {
 	}
 }
 
+func TestSendNormalizesLegacyMessageShape(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Legacy ad-hoc writers may omit id/ts/subject/priority.
+	msg := core.Message{
+		From: "bob",
+		To:   "alice",
+		Body: "legacy body",
+	}
+	if err := d.Send(msg); err != nil {
+		t.Fatalf("send failed: %v", err)
+	}
+
+	msgs, err := d.ReadInbox("alice", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	got := msgs[0]
+	if got.ID == "" {
+		t.Fatal("expected generated id")
+	}
+	if got.TS == "" {
+		t.Fatal("expected generated ts")
+	}
+	if got.Subject != "legacy body" {
+		t.Fatalf("expected subject to default to body, got %q", got.Subject)
+	}
+	if got.Priority != "normal" {
+		t.Fatalf("expected priority normal, got %q", got.Priority)
+	}
+}
+
 func TestSendToNonexistentRecipient(t *testing.T) {
 	d := tempDir(t)
 	msg := core.Message{

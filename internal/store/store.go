@@ -110,9 +110,26 @@ func (d *Dir) ListAgents() ([]string, error) {
 
 // Send appends a message to the recipient's inbox under flock.
 func (d *Dir) Send(msg core.Message) error {
-	if len(msg.Body) > core.MaxBodySize {
-		return fmt.Errorf("message body too large: %d bytes (max %d)", len(msg.Body), core.MaxBodySize)
+	// Backward-compatibility: normalize legacy ad-hoc messages.
+	if msg.ID == "" {
+		msg.ID = core.NewULID()
 	}
+	if msg.TS == "" {
+		msg.TS = time.Now().UTC().Format(time.RFC3339)
+	}
+	if msg.Subject == "" {
+		msg.Subject = msg.Body
+		if len(msg.Subject) > 80 {
+			msg.Subject = msg.Subject[:80]
+		}
+	}
+	if msg.Priority == "" {
+		msg.Priority = "normal"
+	}
+	if err := msg.Validate(); err != nil {
+		return err
+	}
+
 	dir := d.AgentDir(msg.To)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return fmt.Errorf("recipient %q not registered", msg.To)

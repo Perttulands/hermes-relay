@@ -23,6 +23,44 @@ Commands that need agent identity resolve it in this order:
 2. `RELAY_AGENT`
 3. Hostname fallback
 
+## Go Client
+
+Relay also ships a programmatic client in `pkg/client`.
+
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/Perttulands/relay/pkg/client"
+)
+
+func main() {
+	c, err := client.NewClient("~/.relay")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := c.Send("athena", "task complete"); err != nil {
+		log.Fatal(err)
+	}
+
+	msgs, err := c.Read(client.ReadOpts{Last: 10})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("read %d messages", len(msgs))
+
+	// Blocks until new messages are available for this agent.
+	watchMsgs, err := c.Watch()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("watch received %d messages", len(watchMsgs))
+}
+```
+
 ## Build
 
 ```bash
