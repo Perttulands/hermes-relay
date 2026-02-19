@@ -81,6 +81,8 @@ func Run(args []string) int {
 		return ctx.cmdSend(cmdArgs)
 	case "read":
 		return ctx.cmdRead(cmdArgs)
+	case "inbox":
+		return ctx.cmdRead(cmdArgs)
 	case "status":
 		return ctx.cmdStatus(cmdArgs)
 	case "reserve":
@@ -825,6 +827,7 @@ func usage() {
 COMMANDS:
   relay send <to> <message>           Send a message to an agent's inbox
   relay read [flags]                  Read messages from your inbox
+  relay inbox [flags]                 Alias for read
   relay reserve <pattern> [flags]     Reserve file paths
   relay release <pattern>             Release a file reservation
   relay reservations [flags]          List active reservations

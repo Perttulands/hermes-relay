@@ -150,6 +150,20 @@ func TestSendAndRead(t *testing.T) {
 	}
 }
 
+func TestInboxAlias(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent")
+	run("register", "sender")
+	run("send", "test-agent", "hello from alias test", "--agent", "sender")
+
+	code := run("inbox")
+	if code != 0 {
+		t.Fatalf("inbox alias failed with code %d", code)
+	}
+}
+
 func TestSendNoRecipient(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
