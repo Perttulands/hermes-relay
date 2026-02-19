@@ -90,6 +90,16 @@ func TestRegisterNoName(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsDashPrefixedName(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	code := run("register", "--help")
+	if code != 1 {
+		t.Errorf("expected exit 1 for dash-prefixed register name, got %d", code)
+	}
+}
+
 func TestHeartbeat(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()

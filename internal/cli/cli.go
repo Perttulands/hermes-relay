@@ -157,6 +157,10 @@ func (c *context) cmdRegister(args []string) int {
 		return 1
 	}
 	name := args[0]
+	if strings.HasPrefix(name, "-") {
+		errorf("register: invalid agent name %q (agent names cannot start with '-')", name)
+		return 1
+	}
 	flags := parseFlags(args[1:])
 
 	meta := core.AgentMeta{
