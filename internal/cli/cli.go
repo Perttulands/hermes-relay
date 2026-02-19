@@ -901,7 +901,9 @@ func (c *context) cmdSpawn(args []string) int {
 
 	bdBin := resolveBDBinary()
 	createCmd := execCommand(bdBin, "create", "--title", title, "--priority", "1")
-	createCmd.Dir = repo
+	// Run bd in workspace (where beads DB lives), not target repo
+	workspaceDir := resolveWorkspaceDir()
+	createCmd.Dir = workspaceDir
 	createOut, err := createCmd.CombinedOutput()
 	if err != nil {
 		errorf("spawn: bd create failed: %v (%s)", err, strings.TrimSpace(string(createOut)))
@@ -997,6 +999,23 @@ func resolveDispatchScript() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("dispatch script not found (set DISPATCH_SCRIPT)")
+}
+
+func resolveWorkspaceDir() string {
+	// Check ATHENA_WORKSPACE env var first
+	if ws := strings.TrimSpace(os.Getenv("ATHENA_WORKSPACE")); ws != "" {
+		return ws
+	}
+	// Default to ~/athena/workspace
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidate := filepath.Join(home, "athena", "workspace")
+		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+			return candidate
+		}
+	}
+	// Fallback: /home/chrote/athena/workspace
+	return "/home/chrote/athena/workspace"
 }
 
 func waitForSpawnResult(repo, beadID string) (string, error) {
