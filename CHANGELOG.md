@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - README documenting bd 0.46.0 (Perttulands fork) as a runtime dependency
 
+### Fixed
+- Corrected ignored and swallowed errors in `internal/cli/cli.go` for home/hostname resolution, status/read/gc/reservations timestamp parsing, repository path normalization, and force-reserve cleanup paths.
+- Corrected ignored and swallowed errors in `internal/store/store.go` for unread cursor read/write handling, sidecar write/close handling, and list calls inside GC/metrics.
+- Replaced `return nil, nil` error-path returns with explicit empty slices in list/read helpers to keep empty-state behavior while avoiding hidden error-context bugs.
+
 ---
 
 ## [0.1.0] - 2026-02-16

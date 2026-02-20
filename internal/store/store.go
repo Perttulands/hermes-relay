@@ -95,7 +95,7 @@ func (d *Dir) ListAgents() ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(d.Root, "agents"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []string{}, nil
 		}
 		return nil, err
 	}
@@ -152,14 +152,19 @@ func (d *Dir) ReadInbox(agent string, opts ReadOpts) ([]core.Message, error) {
 	data, err := os.ReadFile(inbox)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []core.Message{}, nil
 		}
 		return nil, err
 	}
 
 	var offset int64
 	if opts.Unread {
-		offset, _ = d.readCursor(agent)
+		off, readErr := d.readCursor(agent)
+		if readErr == nil {
+			offset = off
+		} else if !os.IsNotExist(readErr) {
+			return nil, fmt.Errorf("read cursor for %s: %w", agent, readErr)
+		}
 	}
 
 	var msgs []core.Message
@@ -194,7 +199,9 @@ func (d *Dir) ReadInbox(agent string, opts ReadOpts) ([]core.Message, error) {
 	}
 
 	if opts.MarkRead {
-		_ = d.writeCursor(agent, int64(len(data)))
+		if err := d.writeCursor(agent, int64(len(data))); err != nil {
+			return nil, fmt.Errorf("write cursor for %s: %w", agent, err)
+		}
 	}
 
 	return msgs, nil
@@ -419,7 +426,7 @@ func (d *Dir) ListReservations() ([]core.Reservation, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []core.Reservation{}, nil
 		}
 		return nil, err
 	}
@@ -570,8 +577,15 @@ func (d *Dir) ConsumeCommand(id string) (bool, error) {
 		}
 		return false, err
 	}
-	_, _ = f.Write([]byte(time.Now().UTC().Format(time.RFC3339) + "\n"))
-	f.Close()
+	if _, err := f.Write([]byte(time.Now().UTC().Format(time.RFC3339) + "\n")); err != nil {
+		_ = f.Close()
+		_ = os.Remove(sidecar)
+		return false, err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(sidecar)
+		return false, err
+	}
 	return true, nil
 }
 
@@ -581,7 +595,7 @@ func (d *Dir) ListCommands() ([]core.Command, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []core.Command{}, nil
 		}
 		return nil, err
 	}
@@ -628,7 +642,10 @@ func (d *Dir) GC(staleThreshold time.Duration, expiredOnly bool) (GCResult, erro
 	}
 
 	// Clean old consumed commands (older than 1 hour)
-	cmds, _ := d.ListCommands()
+	cmds, err := d.ListCommands()
+	if err != nil {
+		return result, err
+	}
 	for _, cmd := range cmds {
 		sidecar := filepath.Join(d.Root, "commands", cmd.ID+".consumed")
 		if info, err := os.Stat(sidecar); err == nil {
@@ -642,7 +659,10 @@ func (d *Dir) GC(staleThreshold time.Duration, expiredOnly bool) (GCResult, erro
 
 	// Archive stale agents
 	if !expiredOnly {
-		agents, _ := d.ListAgents()
+		agents, err := d.ListAgents()
+		if err != nil {
+			return result, err
+		}
 		for _, name := range agents {
 			hb, err := d.ReadHeartbeat(name)
 			if err != nil {
@@ -671,15 +691,15 @@ type GCResult struct {
 
 // Metrics holds aggregate system metrics.
 type Metrics struct {
-	Agents             int `json:"agents"`
-	AliveAgents        int `json:"alive_agents"`
-	StaleAgents        int `json:"stale_agents"`
-	TotalMessages      int `json:"total_messages"`
-	Reservations       int `json:"reservations"`
-	ActiveReservations int `json:"active_reservations"`
+	Agents              int `json:"agents"`
+	AliveAgents         int `json:"alive_agents"`
+	StaleAgents         int `json:"stale_agents"`
+	TotalMessages       int `json:"total_messages"`
+	Reservations        int `json:"reservations"`
+	ActiveReservations  int `json:"active_reservations"`
 	ExpiredReservations int `json:"expired_reservations"`
-	Commands           int `json:"commands"`
-	PendingCommands    int `json:"pending_commands"`
+	Commands            int `json:"commands"`
+	PendingCommands     int `json:"pending_commands"`
 }
 
 // Metrics computes aggregate system metrics.
@@ -715,7 +735,10 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 	}
 
 	// Count reservations
-	reservations, _ := d.ListReservations()
+	reservations, err := d.ListReservations()
+	if err != nil {
+		return m, err
+	}
 	m.Reservations = len(reservations)
 	now := time.Now()
 	for _, r := range reservations {
@@ -728,7 +751,10 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 	}
 
 	// Count commands
-	cmds, _ := d.ListCommands()
+	cmds, err := d.ListCommands()
+	if err != nil {
+		return m, err
+	}
 	m.Commands = len(cmds)
 	for _, cmd := range cmds {
 		if cmd.Status == "pending" {

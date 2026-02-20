@@ -62,7 +62,11 @@ func Run(args []string) int {
 		dir = os.Getenv("RELAY_DIR")
 	}
 	if dir == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			errorf("init: resolve home directory: %v", err)
+			return 1
+		}
 		dir = filepath.Join(home, ".relay")
 	}
 	s, err := store.New(dir)
@@ -76,7 +80,12 @@ func Run(args []string) int {
 		agent = os.Getenv("RELAY_AGENT")
 	}
 	if agent == "" {
-		agent, _ = os.Hostname()
+		host, err := os.Hostname()
+		if err != nil || strings.TrimSpace(host) == "" {
+			errorf("init: resolve hostname: %v", err)
+			return 1
+		}
+		agent = host
 	}
 
 	ctx := &context{
@@ -367,8 +376,13 @@ func (c *context) cmdRead(args []string) int {
 			}
 		} else {
 			for _, m := range msgs {
-				ts, _ := time.Parse(time.RFC3339, m.TS)
-				age := formatAge(time.Since(ts))
+				age := "now"
+				ts, err := time.Parse(time.RFC3339, m.TS)
+				if err != nil {
+					errorf("read: invalid message timestamp for %s: %v", m.ID, err)
+				} else {
+					age = formatAge(time.Since(ts))
+				}
 				prio := ""
 				if m.Priority != "" && m.Priority != "normal" {
 					prio = fmt.Sprintf(" [%s]", strings.ToUpper(m.Priority))
@@ -397,9 +411,21 @@ func (c *context) cmdStatus(args []string) int {
 		staleThreshold = parseDuration(staleStr)
 	}
 
-	agents, _ := c.store.ListAgents()
-	reservations, _ := c.store.ListReservations()
-	commands, _ := c.store.ListCommands()
+	agents, err := c.store.ListAgents()
+	if err != nil {
+		errorf("status: list agents: %v", err)
+		return 1
+	}
+	reservations, err := c.store.ListReservations()
+	if err != nil {
+		errorf("status: list reservations: %v", err)
+		return 1
+	}
+	commands, err := c.store.ListCommands()
+	if err != nil {
+		errorf("status: list commands: %v", err)
+		return 1
+	}
 
 	if c.json {
 		type statusJSON struct {
@@ -410,11 +436,16 @@ func (c *context) cmdStatus(args []string) int {
 		var agentStatuses []core.AgentStatus
 		for _, name := range agents {
 			hb, err := c.store.ReadHeartbeat(name)
-			meta, _ := c.store.ReadMeta(name)
+			meta, metaErr := c.store.ReadMeta(name)
+			if metaErr != nil {
+				errorf("status: read meta for %s: %v", name, metaErr)
+			}
 			status := core.AgentStatus{
 				Name:  name,
-				Task:  meta.Task,
 				Alive: err == nil && time.Since(hb) < staleThreshold,
+			}
+			if metaErr == nil {
+				status.Task = meta.Task
 			}
 			if err == nil {
 				status.LastHeartbeat = hb
@@ -434,19 +465,25 @@ func (c *context) cmdStatus(args []string) int {
 	fmt.Println("AGENTS")
 	for _, name := range agents {
 		hb, err := c.store.ReadHeartbeat(name)
-		meta, _ := c.store.ReadMeta(name)
+		meta, metaErr := c.store.ReadMeta(name)
+		task := ""
+		if metaErr != nil {
+			errorf("status: read meta for %s: %v", name, metaErr)
+		} else {
+			task = meta.Task
+		}
 		if err != nil {
 			staleCount++
-			fmt.Printf("  %-20s STALE   heartbeat: missing      task: %s\n", name, meta.Task)
+			fmt.Printf("  %-20s STALE   heartbeat: missing      task: %s\n", name, task)
 			continue
 		}
 		age := time.Since(hb)
 		if age > staleThreshold {
 			staleCount++
-			fmt.Printf("  %-20s STALE   last heartbeat: %-8s task: %s\n", name, formatAge(age), meta.Task)
+			fmt.Printf("  %-20s STALE   last heartbeat: %-8s task: %s\n", name, formatAge(age), task)
 		} else {
 			aliveCount++
-			fmt.Printf("  %-20s alive   last heartbeat: %-8s task: %s\n", name, formatAge(age), meta.Task)
+			fmt.Printf("  %-20s alive   last heartbeat: %-8s task: %s\n", name, formatAge(age), task)
 		}
 	}
 	fmt.Printf("  (%d alive, %d stale)\n", aliveCount, staleCount)
@@ -455,15 +492,23 @@ func (c *context) cmdStatus(args []string) int {
 	activeRes, expiredRes := 0, 0
 	now := time.Now()
 	for _, r := range reservations {
-		expires, _ := time.Parse(time.RFC3339, r.ExpiresAt)
+		expires, err := time.Parse(time.RFC3339, r.ExpiresAt)
+		if err != nil {
+			errorf("status: invalid reservation expiry for %s: %v", r.Pattern, err)
+		}
 		excl := "exclusive"
 		if !r.Exclusive {
 			excl = "shared"
 		}
-		if now.After(expires) {
+		if err != nil || now.After(expires) {
 			expiredRes++
-			fmt.Printf("  %-25s %-16s %-10s EXPIRED %s ago    %s\n",
-				r.Pattern, r.Agent, excl, formatAge(now.Sub(expires)), filepath.Base(r.Repo))
+			if err != nil {
+				fmt.Printf("  %-25s %-16s %-10s EXPIRED invalid-ts %s\n",
+					r.Pattern, r.Agent, excl, filepath.Base(r.Repo))
+			} else {
+				fmt.Printf("  %-25s %-16s %-10s EXPIRED %s ago    %s\n",
+					r.Pattern, r.Agent, excl, formatAge(now.Sub(expires)), filepath.Base(r.Repo))
+			}
 		} else {
 			activeRes++
 			fmt.Printf("  %-25s %-16s %-10s expires in %-8s %s\n",
@@ -488,9 +533,15 @@ func (c *context) cmdStatus(args []string) int {
 			if cmd.Status != "pending" {
 				continue
 			}
-			ts, _ := time.Parse(time.RFC3339, cmd.TS)
+			age := "unknown"
+			ts, err := time.Parse(time.RFC3339, cmd.TS)
+			if err != nil {
+				errorf("status: invalid command timestamp for %s: %v", cmd.ID, err)
+			} else {
+				age = formatAge(time.Since(ts))
+			}
 			fmt.Printf("  %-16s %s → %s   %s %s   %s ago\n",
-				cmd.ID[:16], cmd.From, cmd.TargetSession, cmd.Command, cmd.Args, formatAge(time.Since(ts)))
+				cmd.ID[:16], cmd.From, cmd.TargetSession, cmd.Command, cmd.Args, age)
 		}
 	}
 
@@ -516,6 +567,7 @@ func (c *context) cmdWatch(args []string) int {
 			}
 			ts, err := time.Parse(time.RFC3339, m.TS)
 			if err != nil {
+				errorf("watch: invalid message timestamp for %s: %v", m.ID, err)
 				fmt.Printf("%s  %-16s %s\n", "now", m.From, m.Subject)
 			} else {
 				fmt.Printf("%s  %-16s %s\n", formatAge(time.Since(ts)), m.From, m.Subject)
@@ -547,9 +599,18 @@ func (c *context) cmdReserve(args []string) int {
 
 	repo := flags["repo"]
 	if repo == "" {
-		repo, _ = os.Getwd()
+		var err error
+		repo, err = os.Getwd()
+		if err != nil {
+			errorf("reserve: getwd: %v", err)
+			return 1
+		}
 	}
-	repo, _ = filepath.Abs(repo)
+	repo, err := filepath.Abs(repo)
+	if err != nil {
+		errorf("reserve: absolute repo path: %v", err)
+		return 1
+	}
 
 	ttl := parseDuration(flags["ttl"])
 	if ttl == 0 {
@@ -600,10 +661,15 @@ func (c *context) cmdReserve(args []string) int {
 	if err := c.store.Reserve(res); err != nil {
 		if force && strings.Contains(err.Error(), "conflict") {
 			// Force: remove existing and retry
-			c.store.Release(c.agent, repo, pattern)
+			if releaseErr := c.store.Release(c.agent, repo, pattern); releaseErr != nil {
+				errorf("reserve (force): release existing reservation: %v", releaseErr)
+			}
 			// Also try removing other agent's reservation
 			hash := store.ReservationHash(repo, pattern)
-			os.Remove(filepath.Join(c.store.Root, "reservations", hash+".json"))
+			if removeErr := os.Remove(filepath.Join(c.store.Root, "reservations", hash+".json")); removeErr != nil && !os.IsNotExist(removeErr) {
+				errorf("reserve (force): remove conflicting reservation file: %v", removeErr)
+				return 1
+			}
 			if err := c.store.Reserve(res); err != nil {
 				errorf("reserve (force): %v", err)
 				return 1
@@ -645,9 +711,18 @@ func (c *context) cmdRelease(args []string) int {
 
 	repo := flags["repo"]
 	if repo == "" {
-		repo, _ = os.Getwd()
+		var err error
+		repo, err = os.Getwd()
+		if err != nil {
+			errorf("release: getwd: %v", err)
+			return 1
+		}
 	}
-	repo, _ = filepath.Abs(repo)
+	repo, err := filepath.Abs(repo)
+	if err != nil {
+		errorf("release: absolute repo path: %v", err)
+		return 1
+	}
 
 	if err := c.store.Release(c.agent, repo, pattern); err != nil {
 		errorf("release: %v", err)
@@ -669,7 +744,12 @@ func (c *context) cmdReservations(args []string) int {
 
 	repoFilter := flags["repo"]
 	if repoFilter != "" {
-		repoFilter, _ = filepath.Abs(repoFilter)
+		var err error
+		repoFilter, err = filepath.Abs(repoFilter)
+		if err != nil {
+			errorf("reservations: absolute repo path: %v", err)
+			return 1
+		}
 	}
 	agentFilter := flags["agent"]
 	showExpired := flagBool(args, "--expired")
@@ -683,7 +763,14 @@ func (c *context) cmdReservations(args []string) int {
 		if agentFilter != "" && r.Agent != agentFilter {
 			continue
 		}
-		expires, _ := time.Parse(time.RFC3339, r.ExpiresAt)
+		expires, err := time.Parse(time.RFC3339, r.ExpiresAt)
+		if err != nil {
+			errorf("reservations: invalid expiry for %s: %v", r.Pattern, err)
+			if showExpired {
+				filtered = append(filtered, r)
+			}
+			continue
+		}
 		if !showExpired && now.After(expires) {
 			continue
 		}
@@ -703,14 +790,22 @@ func (c *context) cmdReservations(args []string) int {
 	}
 
 	for _, r := range filtered {
-		expires, _ := time.Parse(time.RFC3339, r.ExpiresAt)
+		expires, err := time.Parse(time.RFC3339, r.ExpiresAt)
+		if err != nil {
+			errorf("reservations: invalid expiry for %s: %v", r.Pattern, err)
+		}
 		excl := "exclusive"
 		if !r.Exclusive {
 			excl = "shared"
 		}
-		if now.After(expires) {
-			fmt.Printf("  %-25s %-16s %-10s EXPIRED %s ago    %s\n",
-				r.Pattern, r.Agent, excl, formatAge(now.Sub(expires)), filepath.Base(r.Repo))
+		if err != nil || now.After(expires) {
+			if err != nil {
+				fmt.Printf("  %-25s %-16s %-10s EXPIRED invalid-ts %s\n",
+					r.Pattern, r.Agent, excl, filepath.Base(r.Repo))
+			} else {
+				fmt.Printf("  %-25s %-16s %-10s EXPIRED %s ago    %s\n",
+					r.Pattern, r.Agent, excl, formatAge(now.Sub(expires)), filepath.Base(r.Repo))
+			}
 		} else {
 			fmt.Printf("  %-25s %-16s %-10s expires in %-8s %s\n",
 				r.Pattern, r.Agent, excl, formatAge(expires.Sub(now)), filepath.Base(r.Repo))
@@ -848,11 +943,21 @@ func (c *context) cmdGC(args []string) int {
 
 	if dryRun {
 		// Show what would be cleaned
-		reservations, _ := c.store.ListReservations()
+		reservations, err := c.store.ListReservations()
+		if err != nil {
+			errorf("gc: list reservations: %v", err)
+			return 1
+		}
 		now := time.Now()
 		expCount := 0
 		for _, r := range reservations {
-			expires, _ := time.Parse(time.RFC3339, r.ExpiresAt)
+			expires, err := time.Parse(time.RFC3339, r.ExpiresAt)
+			if err != nil {
+				errorf("gc: invalid reservation expiry for %s: %v", r.Pattern, err)
+				expCount++
+				fmt.Printf("  would remove: reservation %s (%s) [invalid expiry]\n", r.Pattern, r.Agent)
+				continue
+			}
 			if now.After(expires) {
 				expCount++
 				fmt.Printf("  would remove: reservation %s (%s)\n", r.Pattern, r.Agent)
