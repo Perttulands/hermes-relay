@@ -6,6 +6,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 ## [Unreleased]
 
+### Changed
+- README: restored mythology intro (Hermes the Messenger), character sigil and visual items, "Part of the Agora" section
+
 ## [2026-02-20]
 
 ### Added

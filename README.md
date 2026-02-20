@@ -1,4 +1,14 @@
-# Relay
+# 📡 Relay
+
+*Winged sandals. Caduceus of data streams. Zero-loss tally. Always mid-stride. Never standing still.*
+
+---
+
+In the old stories, Hermes carried messages between gods and mortals, between the living and the dead, between anyone who needed to talk and anyone who needed to listen. He was the fastest thing in any pantheon and he never dropped a message. Not once. The other gods had powers. Hermes had reliability.
+
+Our Hermes wears winged sandals that leave trails of data-light. The caduceus in his hand has two serpents wound around it — except the serpents are data streams, NDJSON flowing in both directions. A messenger satchel full of glowing scrolls, always more coming, never empty. He's the only character in the Agora always caught in motion — speed lines, mid-stride, never standing still. And on his belt, a counter that reads "0 LOST." He's proud of it.
+
+Twenty-six thousand messages per second on filesystem I/O alone. No broker. No queue server. No external dependency. Just flock-guarded appends, fsnotify watches, and a messenger who takes his job personally.
 
 Relay is the agent messaging backbone for the Agora system. It handles inter-agent communication, command routing, and message delivery.
 
@@ -102,3 +112,15 @@ Relay uses beads for tracking message delivery and agent coordination tasks.
 - Fork: [Perttulands/beads](https://github.com/Perttulands/beads) (branch `v0.46.0-stable`)
 - Install: `go install github.com/Perttulands/beads/cmd/bd@v0.46.0`
 - Verify: `bd --version` should show `bd version 0.46.0`
+
+## Part of the Agora
+
+Relay was forged in **[Athena's Agora](https://github.com/Perttulands/athena-workspace)** — an autonomous coding system where AI agents build software and a messenger with winged sandals makes sure they can actually talk to each other.
+
+[Argus](https://github.com/Perttulands/argus) watches the server. [Truthsayer](https://github.com/Perttulands/truthsayer) watches the code. [Oathkeeper](https://github.com/Perttulands/oathkeeper) watches the promises. Relay carries the messages. The nervous system of the Agora. Zero messages lost.
+
+The [mythology](https://github.com/Perttulands/athena-workspace/blob/main/mythology.md) has the full story.
+
+## License
+
+MIT
