@@ -781,7 +781,11 @@ func (c *context) doWakeMethod(text, method string) int {
 
 func wakeGateway(text string) error {
 	// Try wake-gateway.sh
-	path := filepath.Join(os.Getenv("HOME"), ".openclaw", "workspace", "scripts", "wake-gateway.sh")
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return fmt.Errorf("resolve home directory for wake gateway")
+	}
+	path := filepath.Join(home, ".openclaw", "workspace", "scripts", "wake-gateway.sh")
 	if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("wake-gateway.sh not found")
 	}

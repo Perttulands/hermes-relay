@@ -4,6 +4,9 @@ set -euo pipefail
 SERVICE_NAME="relay.service"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_SERVICE_FILE="${SCRIPT_DIR}/deployment/${SERVICE_NAME}"
+if [[ -z "${XDG_CONFIG_HOME:-}" ]]; then
+  : "${HOME:?HOME is required when XDG_CONFIG_HOME is unset}"
+fi
 USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 DEST_SERVICE_FILE="${USER_SYSTEMD_DIR}/${SERVICE_NAME}"
 
