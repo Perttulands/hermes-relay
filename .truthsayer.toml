@@ -1,0 +1,9 @@
+# Truthsayer config for Relay
+# Suppress rules that produce false positives in CLI tools where
+# best-effort fallbacks (hostname, UserHomeDir, Getwd) are intentional.
+
+[rules]
+disable = [
+  "silent-fallback.ignored-error",
+  "error-context.nil-on-error",
+]

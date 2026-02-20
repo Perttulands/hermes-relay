@@ -8,10 +8,11 @@ type Message struct {
 	TS       string   `json:"ts"`
 	From     string   `json:"from"`
 	To       string   `json:"to"`
-	Subject  string   `json:"subject"`
+	Subject  string   `json:"subject,omitempty"`
 	Body     string   `json:"body"`
 	Thread   string   `json:"thread,omitempty"`
-	Priority string   `json:"priority"`
+	Priority string   `json:"priority,omitempty"`
+	ReplyTo  string   `json:"reply_to,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
 }
 
