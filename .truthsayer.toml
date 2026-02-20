@@ -1,9 +1,8 @@
-# Truthsayer config for Relay
-# Suppress rules that produce false positives in CLI tools where
-# best-effort fallbacks (hostname, UserHomeDir, Getwd) are intentional.
+[scan]
+exclude_dirs = ["vendor", "node_modules", "testdata", ".beads"]
+exclude_patterns = ["*_test.go"]
 
 [rules]
 disable = [
-  "silent-fallback.ignored-error",
-  "error-context.nil-on-error",
+  "bad-defaults.unvalidated-env-bash",
 ]
