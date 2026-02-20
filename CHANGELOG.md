@@ -9,6 +9,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [2026-02-20]
 
 ### Added
+- `relay metrics` command showing aggregate system stats: agent counts (alive/stale), total messages, reservations (active/expired), and commands (pending/total). Supports `--json` and `--stale` flags.
+
+### Added
 - Added user-level systemd service support with `deployment/relay.service` and `install-service.sh`.
 - Added formal message schema docs (`docs/SCHEMA.md`) and schema validation/defaulting coverage for Relay messages.
 - Added Go client coverage for `ReadOpts.From` filtering to support targeted dispatch/completion reads.

@@ -391,6 +391,34 @@ func TestGC(t *testing.T) {
 	}
 }
 
+func TestMetrics(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "agent-a")
+	run("register", "agent-b")
+	run("send", "agent-b", "hello", "--agent", "agent-a")
+	run("reserve", "src/**", "--repo", "/tmp/test-repo", "--agent", "agent-a")
+
+	code := run("metrics")
+	if code != 0 {
+		t.Fatalf("metrics failed with code %d", code)
+	}
+}
+
+func TestMetricsJSON(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "agent-a")
+	run("send", "agent-a", "msg1", "--agent", "agent-a")
+
+	code := run("metrics", "--json")
+	if code != 0 {
+		t.Fatalf("metrics --json failed with code %d", code)
+	}
+}
+
 func TestGCDryRun(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()

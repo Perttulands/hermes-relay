@@ -669,6 +669,76 @@ type GCResult struct {
 	StaleAgents         int `json:"stale_agents"`
 }
 
+// Metrics holds aggregate system metrics.
+type Metrics struct {
+	Agents             int `json:"agents"`
+	AliveAgents        int `json:"alive_agents"`
+	StaleAgents        int `json:"stale_agents"`
+	TotalMessages      int `json:"total_messages"`
+	Reservations       int `json:"reservations"`
+	ActiveReservations int `json:"active_reservations"`
+	ExpiredReservations int `json:"expired_reservations"`
+	Commands           int `json:"commands"`
+	PendingCommands    int `json:"pending_commands"`
+}
+
+// Metrics computes aggregate system metrics.
+func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
+	var m Metrics
+
+	agents, err := d.ListAgents()
+	if err != nil {
+		return m, err
+	}
+	m.Agents = len(agents)
+	for _, name := range agents {
+		hb, err := d.ReadHeartbeat(name)
+		if err != nil || time.Since(hb) > staleThreshold {
+			m.StaleAgents++
+		} else {
+			m.AliveAgents++
+		}
+	}
+
+	// Count messages across all inboxes
+	for _, name := range agents {
+		inbox := filepath.Join(d.AgentDir(name), "inbox.jsonl")
+		data, err := os.ReadFile(inbox)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) != "" {
+				m.TotalMessages++
+			}
+		}
+	}
+
+	// Count reservations
+	reservations, _ := d.ListReservations()
+	m.Reservations = len(reservations)
+	now := time.Now()
+	for _, r := range reservations {
+		expires, err := time.Parse(time.RFC3339, r.ExpiresAt)
+		if err != nil || now.After(expires) {
+			m.ExpiredReservations++
+		} else {
+			m.ActiveReservations++
+		}
+	}
+
+	// Count commands
+	cmds, _ := d.ListCommands()
+	m.Commands = len(cmds)
+	for _, cmd := range cmds {
+		if cmd.Status == "pending" {
+			m.PendingCommands++
+		}
+	}
+
+	return m, nil
+}
+
 // TouchWake touches the wake trigger file.
 func (d *Dir) TouchWake(text string) error {
 	triggerPath := filepath.Join(d.Root, "wake", "trigger")

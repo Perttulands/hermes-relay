@@ -113,6 +113,8 @@ func Run(args []string) int {
 		return ctx.cmdCmd(cmdArgs)
 	case "gc":
 		return ctx.cmdGC(cmdArgs)
+	case "metrics":
+		return ctx.cmdMetrics(cmdArgs)
 	case "spawn":
 		return ctx.cmdSpawn(cmdArgs)
 	default:
@@ -871,6 +873,31 @@ func (c *context) cmdGC(args []string) int {
 	return 0
 }
 
+func (c *context) cmdMetrics(args []string) int {
+	flags := parseFlags(args)
+	staleThreshold := 5 * time.Minute
+	if s := flags["stale"]; s != "" {
+		staleThreshold = parseDuration(s)
+	}
+
+	m, err := c.store.Metrics(staleThreshold)
+	if err != nil {
+		errorf("metrics: %v", err)
+		return 1
+	}
+
+	if c.json {
+		outputJSON(m)
+		return 0
+	}
+
+	fmt.Printf("AGENTS          %d total (%d alive, %d stale)\n", m.Agents, m.AliveAgents, m.StaleAgents)
+	fmt.Printf("MESSAGES        %d total\n", m.TotalMessages)
+	fmt.Printf("RESERVATIONS    %d total (%d active, %d expired)\n", m.Reservations, m.ActiveReservations, m.ExpiredReservations)
+	fmt.Printf("COMMANDS        %d total (%d pending)\n", m.Commands, m.PendingCommands)
+	return 0
+}
+
 func (c *context) cmdSpawn(args []string) int {
 	flags := parseFlags(args)
 	repo := strings.TrimSpace(flags["repo"])
@@ -1053,6 +1080,7 @@ COMMANDS:
   relay status                        Show all agents, heartbeats, reservations
   relay register <name> [flags]       Register agent identity
   relay heartbeat                     Update agent heartbeat
+  relay metrics [flags]                Show aggregate system metrics
   relay gc                            Clean up expired reservations and stale agents
   relay version                       Print version
 
