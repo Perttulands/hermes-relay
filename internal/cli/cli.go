@@ -1120,9 +1120,7 @@ func resolveDispatchScript() (string, error) {
 		return "", fmt.Errorf("dispatch script not found at DISPATCH_SCRIPT=%s", fromEnv)
 	}
 
-	candidates := []string{
-		"/home/chrote/athena/workspace/scripts/dispatch.sh",
-	}
+	var candidates []string
 
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -1138,20 +1136,19 @@ func resolveDispatchScript() (string, error) {
 }
 
 func resolveWorkspaceDir() string {
-	// Check ATHENA_WORKSPACE env var first
 	if ws := strings.TrimSpace(os.Getenv("ATHENA_WORKSPACE")); ws != "" {
 		return ws
 	}
-	// Default to ~/athena/workspace
 	home, err := os.UserHomeDir()
 	if err == nil {
 		candidate := filepath.Join(home, "athena", "workspace")
 		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
 			return candidate
 		}
+		// Directory doesn't exist yet; return the path anyway as fallback.
+		return candidate
 	}
-	// Fallback: /home/chrote/athena/workspace
-	return "/home/chrote/athena/workspace"
+	return filepath.Join("athena", "workspace")
 }
 
 func waitForSpawnResult(repo, beadID string) (string, error) {
