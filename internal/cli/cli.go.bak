@@ -336,21 +336,7 @@ func (c *context) cmdSend(args []string) int {
 	}
 
 	if wake {
-		// Try to wake the target agent's OpenClaw service first
-		if to != "" {
-			svcName := fmt.Sprintf("openclaw-%s.service", to)
-			cmd := execCommand("systemctl", "--user", "start", svcName)
-			if err := cmd.Run(); err == nil {
-				if !c.quiet {
-					fmt.Printf("wake: started %s\n", svcName)
-				}
-			} else {
-				// Fall back to default wake (Athena gateway)
-				c.doWake("")
-			}
-		} else {
-			c.doWake("")
-		}
+		c.doWake("")
 	}
 
 	return 0
