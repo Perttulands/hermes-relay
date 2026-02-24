@@ -352,7 +352,7 @@ func TestCmd(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
-	code := run("cmd", "agent:main:main", "/verify", "repo", "bd-42")
+	code := run("cmd", "agent:main:main", "/verify", "repo", "br-42")
 	if code != 0 {
 		t.Fatalf("cmd failed with code %d", code)
 	}
@@ -561,7 +561,7 @@ func TestSpawnSuccess(t *testing.T) {
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		switch filepath.Base(name) {
-		case "bd":
+		case "br":
 			return exec.Command("bash", "-lc", "echo '✓ Created issue: athena-xyz'")
 		default:
 			return exec.Command("bash", "-lc", "exit 0")
@@ -573,10 +573,10 @@ func TestSpawnSuccess(t *testing.T) {
 		t.Fatalf("spawn failed with code %d", code)
 	}
 	if len(calls) < 2 {
-		t.Fatalf("expected bd + dispatch calls, got %v", calls)
+		t.Fatalf("expected br + dispatch calls, got %v", calls)
 	}
-	if !strings.Contains(calls[0], "create --title Implement feature X --priority 1") {
-		t.Fatalf("unexpected bd call: %s", calls[0])
+	if !strings.Contains(calls[0], "create Implement feature X -t task") {
+		t.Fatalf("unexpected br call: %s", calls[0])
 	}
 	if !strings.Contains(calls[1], fmt.Sprintf("athena-xyz %s codex Implement feature X", repo)) {
 		t.Fatalf("unexpected dispatch call: %s", calls[1])
@@ -616,7 +616,7 @@ func TestSpawnWaitAndNotify(t *testing.T) {
 	var calls []string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, name+" "+strings.Join(args, " "))
-		if filepath.Base(name) == "bd" {
+		if filepath.Base(name) == "br" {
 			return exec.Command("bash", "-lc", "echo '✓ Created issue: athena-wait'")
 		}
 		return exec.Command("bash", "-lc", "exit 0")
@@ -653,14 +653,14 @@ func TestFullScenario(t *testing.T) {
 
 	// Register 3 agents
 	run("register", "athena", "--program", "openclaw", "--task", "orchestrator")
-	run("register", "agent-1", "--program", "claude-code", "--model", "opus", "--task", "auth refactor", "--bead", "bd-42")
-	run("register", "agent-2", "--program", "claude-code", "--model", "opus", "--task", "API endpoints", "--bead", "bd-43")
+	run("register", "agent-1", "--program", "claude-code", "--model", "opus", "--task", "auth refactor", "--bead", "br-42")
+	run("register", "agent-2", "--program", "claude-code", "--model", "opus", "--task", "API endpoints", "--bead", "br-43")
 
 	// Reserve files
-	if code := run("reserve", "src/auth/**", "--repo", "/tmp/repo", "--agent", "agent-1", "--reason", "bd-42"); code != 0 {
+	if code := run("reserve", "src/auth/**", "--repo", "/tmp/repo", "--agent", "agent-1", "--reason", "br-42"); code != 0 {
 		t.Fatalf("reserve auth failed: %d", code)
 	}
-	if code := run("reserve", "src/api/**", "--repo", "/tmp/repo", "--agent", "agent-2", "--reason", "bd-43"); code != 0 {
+	if code := run("reserve", "src/api/**", "--repo", "/tmp/repo", "--agent", "agent-2", "--reason", "br-43"); code != 0 {
 		t.Fatalf("reserve api failed: %d", code)
 	}
 
@@ -670,8 +670,8 @@ func TestFullScenario(t *testing.T) {
 	}
 
 	// Send messages
-	run("send", "athena", "Starting auth refactor", "--agent", "agent-1", "--thread", "bd-42")
-	run("send", "athena", "Starting API work", "--agent", "agent-2", "--thread", "bd-43")
+	run("send", "athena", "Starting auth refactor", "--agent", "agent-1", "--thread", "br-42")
+	run("send", "athena", "Starting API work", "--agent", "agent-2", "--thread", "br-43")
 
 	// Status should show everything
 	if code := run("status"); code != 0 {
@@ -680,10 +680,10 @@ func TestFullScenario(t *testing.T) {
 
 	// Agent-1 completes, releases and sends
 	run("release", "--all", "--agent", "agent-1")
-	run("send", "athena", "bd-42 complete. All tests pass.", "--agent", "agent-1", "--thread", "bd-42", "--priority", "high")
+	run("send", "athena", "br-42 complete. All tests pass.", "--agent", "agent-1", "--thread", "br-42", "--priority", "high")
 
 	// Post command
-	run("cmd", "agent:main:main", "/verify", "repo", "bd-42", "--agent", "agent-1")
+	run("cmd", "agent:main:main", "/verify", "repo", "br-42", "--agent", "agent-1")
 
 	// Athena reads messages
 	if code := run("read", "--agent", "athena", "--from", "agent-1"); code != 0 {

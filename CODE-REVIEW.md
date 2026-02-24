@@ -43,8 +43,8 @@ Scope: `main` branch as of 2026-02-19.
 
 ## Inconsistencies Between Docs and Code
 
-- **README vs `go.mod`**: README lists `bd` (Beads CLI) v0.46.0 as a dependency,
-  but `go.mod` only has `github.com/oklog/ulid/v2`. `bd` is an external runtime
+- **README vs `go.mod`**: README lists `br` (beads_rust CLI) as a dependency,
+  but `go.mod` only has `github.com/oklog/ulid/v2`. `br` is an external runtime
   tool, not a Go module — the README should clarify it is a *runtime* requirement,
   not a Go dependency.
 - **`wake` command**: code references "Athena gateway" and writes a trigger file;

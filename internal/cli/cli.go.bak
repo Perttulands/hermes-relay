@@ -1035,20 +1035,20 @@ func (c *context) cmdSpawn(args []string) int {
 		}
 	}
 
-	bdBin := resolveBDBinary()
-	createCmd := execCommand(bdBin, "create", "--title", title, "--priority", "1")
-	// Run bd in workspace (where beads DB lives), not target repo
+	brBin := resolveBRBinary()
+	createCmd := execCommand(brBin, "create", title, "-t", "task")
+	// Run br in workspace (where beads DB lives), not target repo
 	workspaceDir := resolveWorkspaceDir()
 	createCmd.Dir = workspaceDir
 	createOut, err := createCmd.CombinedOutput()
 	if err != nil {
-		errorf("spawn: bd create failed: %v (%s)", err, strings.TrimSpace(string(createOut)))
+		errorf("spawn: br create failed: %v (%s)", err, strings.TrimSpace(string(createOut)))
 		return 1
 	}
 
 	beadID := extractSpawnBeadID(string(createOut))
 	if beadID == "" {
-		errorf("spawn: could not parse bead id from bd output: %s", strings.TrimSpace(string(createOut)))
+		errorf("spawn: could not parse bead id from br output: %s", strings.TrimSpace(string(createOut)))
 		return 1
 	}
 
@@ -1091,15 +1091,15 @@ func (c *context) cmdSpawn(args []string) int {
 	return 0
 }
 
-func resolveBDBinary() string {
+func resolveBRBinary() string {
 	home, err := os.UserHomeDir()
 	if err == nil {
-		candidate := filepath.Join(home, "go", "bin", "bd")
+		candidate := filepath.Join(home, ".cargo", "bin", "br")
 		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
 			return candidate
 		}
 	}
-	return "bd"
+	return "br"
 }
 
 func extractSpawnBeadID(output string) string {

@@ -107,14 +107,15 @@ systemctl --user disable --now relay.service
 
 ## Dependencies
 
-### Beads (bd CLI)
+### Beads (br CLI)
 
 Relay uses beads for tracking message delivery and agent coordination tasks.
 
-- Required version: **0.46.0**
-- Fork: [Perttulands/beads](https://github.com/Perttulands/beads) (branch `v0.46.0-stable`)
-- Install: `go install github.com/Perttulands/beads/cmd/bd@v0.46.0`
-- Verify: `bd --version` should show `bd version 0.46.0`
+- Source: [Perttulands/beads_rust](https://github.com/Perttulands/beads_rust)
+- Install: `cargo install beads_rust` or build from source
+- Verify: `br --version`
+
+**Note:** `br` is non-invasive and never executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/ && git commit`.
 
 ## Part of the Agora
 

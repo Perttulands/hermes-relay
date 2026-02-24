@@ -554,7 +554,7 @@ func TestCommand(t *testing.T) {
 		From:          "agent-1",
 		TargetSession: "agent:main:main",
 		Command:       "/verify",
-		Args:          "repo bd-42",
+		Args:          "repo br-42",
 		Status:        "pending",
 	}
 	if err := d.CreateCommand(cmd); err != nil {

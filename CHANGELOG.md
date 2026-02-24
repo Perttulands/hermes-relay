@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- README documenting bd 0.46.0 (Perttulands fork) as a runtime dependency
+- README documenting br (beads_rust) as a runtime dependency
 
 ### Fixed
 - Corrected ignored and swallowed errors in `internal/cli/cli.go` for home/hostname resolution, status/read/gc/reservations timestamp parsing, repository path normalization, and force-reserve cleanup paths.
