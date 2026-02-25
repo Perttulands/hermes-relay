@@ -854,3 +854,220 @@ func splitLines(s string) []string {
 	}
 	return lines
 }
+
+// --- Agent card tests ---
+
+func TestWriteAndReadCard(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	card := core.AgentCard{
+		Name:         "agent",
+		Skills:       []string{"go", "rust"},
+		Status:       core.AgentIdle,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := d.WriteCard(card); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.ReadCard("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "agent" {
+		t.Errorf("expected name=agent, got %s", got.Name)
+	}
+	if got.Status != core.AgentIdle {
+		t.Errorf("expected status=idle, got %s", got.Status)
+	}
+	if len(got.Skills) != 2 || got.Skills[0] != "go" || got.Skills[1] != "rust" {
+		t.Errorf("unexpected skills: %v", got.Skills)
+	}
+	if got.LastSeen == "" {
+		t.Error("expected LastSeen to be set")
+	}
+}
+
+func TestWriteCardInvalidStatus(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	card := core.AgentCard{
+		Name:   "agent",
+		Status: "invalid-status",
+	}
+	err := d.WriteCard(card)
+	if err == nil {
+		t.Fatal("expected error for invalid status")
+	}
+}
+
+func TestWriteCardRequiresName(t *testing.T) {
+	d := tempDir(t)
+	card := core.AgentCard{Status: core.AgentIdle}
+	err := d.WriteCard(card)
+	if err == nil {
+		t.Fatal("expected error for empty name")
+	}
+}
+
+func TestHeartbeatUpdatesCardLastSeen(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Write initial card with a backdated LastSeen
+	oldTime := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	card := core.AgentCard{
+		Name:         "agent",
+		Status:       core.AgentIdle,
+		LastSeen:     oldTime,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := d.writeCardRaw(card); err != nil {
+		t.Fatal(err)
+	}
+
+	// Heartbeat should update card's LastSeen to ~now
+	if err := d.Heartbeat("agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	afterHB, err := d.ReadCard("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterHB.LastSeen == oldTime {
+		t.Error("expected LastSeen to be updated after heartbeat")
+	}
+	// Verify the new LastSeen is recent
+	ts, parseErr := time.Parse(time.RFC3339, afterHB.LastSeen)
+	if parseErr != nil {
+		t.Fatalf("invalid LastSeen timestamp: %v", parseErr)
+	}
+	if time.Since(ts) > 5*time.Second {
+		t.Errorf("LastSeen too old after heartbeat: %v", ts)
+	}
+}
+
+func TestHeartbeatWithoutCardStillWorks(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// No card.json exists — heartbeat should still succeed
+	if err := d.Heartbeat("agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	hb, err := d.ReadHeartbeat("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(hb) > 5*time.Second {
+		t.Errorf("heartbeat too old: %v", hb)
+	}
+}
+
+func TestListCards(t *testing.T) {
+	d := tempDir(t)
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		d.Register(core.AgentMeta{Name: name, RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	}
+	// Only alpha and gamma have cards
+	d.WriteCard(core.AgentCard{Name: "alpha", Status: core.AgentIdle, RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	d.WriteCard(core.AgentCard{Name: "gamma", Status: core.AgentWorking, CurrentTask: "br-42", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	cards, err := d.ListCards()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 2 {
+		t.Fatalf("expected 2 cards, got %d", len(cards))
+	}
+}
+
+func TestCardForwardCompat(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Write card with future field that the struct doesn't know about
+	rawJSON := `{"name":"agent","registered_at":"2026-02-25T00:00:00Z","last_seen":"2026-02-25T00:00:00Z","future_field":"hello"}`
+	cardPath := filepath.Join(d.AgentDir("agent"), "card.json")
+	if err := os.WriteFile(cardPath, []byte(rawJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should still read successfully, ignoring unknown fields
+	card, err := d.ReadCard("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Name != "agent" {
+		t.Errorf("expected name=agent, got %s", card.Name)
+	}
+}
+
+func TestCardMissingFields(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Minimal card — only required fields
+	rawJSON := `{"name":"agent","registered_at":"2026-02-25T00:00:00Z","last_seen":"2026-02-25T00:00:00Z"}`
+	cardPath := filepath.Join(d.AgentDir("agent"), "card.json")
+	if err := os.WriteFile(cardPath, []byte(rawJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	card, err := d.ReadCard("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Name != "agent" {
+		t.Errorf("expected name=agent, got %s", card.Name)
+	}
+	if card.Status != "" {
+		t.Errorf("expected empty status, got %s", card.Status)
+	}
+	if card.Skills != nil {
+		t.Errorf("expected nil skills, got %v", card.Skills)
+	}
+}
+
+func TestReadHeartbeatTimePrefersCard(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Write card with a known LastSeen
+	futureTime := time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339)
+	card := core.AgentCard{
+		Name:         "agent",
+		LastSeen:     futureTime,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := d.writeCardRaw(card); err != nil {
+		t.Fatal(err)
+	}
+
+	hbt, err := d.ReadHeartbeatTime("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, _ := time.Parse(time.RFC3339, futureTime)
+	if !hbt.Equal(expected) {
+		t.Errorf("expected ReadHeartbeatTime to return card's LastSeen %v, got %v", expected, hbt)
+	}
+}
+
+func TestReadHeartbeatTimeFallsBackToFile(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// No card.json — should fall back to heartbeat file
+	hbt, err := d.ReadHeartbeatTime("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(hbt) > 5*time.Second {
+		t.Errorf("expected recent heartbeat time, got %v ago", time.Since(hbt))
+	}
+}

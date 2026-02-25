@@ -162,6 +162,25 @@ func (c *Client) Watch() ([]Message, error) {
 	return msgs, nil
 }
 
+// AgentCard is a Relay agent card.
+type AgentCard = core.AgentCard
+
+// UpdateCard writes or updates the current agent's card.
+func (c *Client) UpdateCard(card core.AgentCard) error {
+	card.Name = c.agent
+	return c.store.WriteCard(card)
+}
+
+// GetCard reads the card for the named agent.
+func (c *Client) GetCard(agent string) (core.AgentCard, error) {
+	return c.store.ReadCard(agent)
+}
+
+// ListCards returns cards for all registered agents that have one.
+func (c *Client) ListCards() ([]core.AgentCard, error) {
+	return c.store.ListCards()
+}
+
 func resolveDir(dir string) (string, error) {
 	if dir == "" {
 		dir = os.Getenv("RELAY_DIR")

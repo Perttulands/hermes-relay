@@ -333,3 +333,124 @@ func TestSendTypedEmptyRecipient(t *testing.T) {
 		t.Fatal("expected error for empty recipient")
 	}
 }
+
+// --- Agent card client tests ---
+
+func TestUpdateAndGetCard(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "agent-1")
+
+	t.Setenv("RELAY_AGENT", "agent-1")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	card := core.AgentCard{
+		Skills:       []string{"go", "rust"},
+		Status:       core.AgentWorking,
+		CurrentTask:  "br-42",
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := c.UpdateCard(card); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.GetCard("agent-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "agent-1" {
+		t.Errorf("expected name=agent-1, got %s", got.Name)
+	}
+	if got.Status != core.AgentWorking {
+		t.Errorf("expected status=working, got %s", got.Status)
+	}
+	if got.CurrentTask != "br-42" {
+		t.Errorf("expected current_task=br-42, got %s", got.CurrentTask)
+	}
+	if len(got.Skills) != 2 {
+		t.Errorf("expected 2 skills, got %d", len(got.Skills))
+	}
+}
+
+func TestListCardsClient(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "agent-1", "agent-2", "agent-3")
+
+	// Write cards for agent-1 and agent-2 only
+	t.Setenv("RELAY_AGENT", "agent-1")
+	c1, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1.UpdateCard(core.AgentCard{
+		Skills:       []string{"go"},
+		Status:       core.AgentIdle,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	t.Setenv("RELAY_AGENT", "agent-2")
+	c2, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.UpdateCard(core.AgentCard{
+		Skills:       []string{"rust"},
+		Status:       core.AgentWorking,
+		CurrentTask:  "br-10",
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	// ListCards from any client should return both
+	cards, err := c2.ListCards()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 2 {
+		t.Fatalf("expected 2 cards, got %d", len(cards))
+	}
+}
+
+func TestGetCardNonexistent(t *testing.T) {
+	root, _ := setupStore(t)
+
+	t.Setenv("RELAY_AGENT", "agent-1")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = c.GetCard("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent card")
+	}
+}
+
+func TestUpdateCardSetsName(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "my-agent")
+
+	t.Setenv("RELAY_AGENT", "my-agent")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Name is omitted in the card — UpdateCard should set it from the client's agent.
+	card := core.AgentCard{
+		Status:       core.AgentIdle,
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := c.UpdateCard(card); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.GetCard("my-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "my-agent" {
+		t.Errorf("expected name=my-agent, got %s", got.Name)
+	}
+}

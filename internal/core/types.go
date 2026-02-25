@@ -72,10 +72,36 @@ type Command struct {
 	Status        string `json:"status"`
 }
 
+// AgentCard is the machine-readable identity + capability manifest for an agent.
+type AgentCard struct {
+	Name         string   `json:"name"`
+	Skills       []string `json:"skills,omitempty"`       // freeform skill tags
+	Status       string   `json:"status,omitempty"`       // "idle", "working", "offline"
+	CurrentTask  string   `json:"current_task,omitempty"` // bead ID if working
+	LastSeen     string   `json:"last_seen"`              // RFC3339 timestamp (replaces heartbeat)
+	RegisteredAt string   `json:"registered_at"`
+}
+
+// Agent statuses.
+const (
+	AgentIdle    = "idle"
+	AgentWorking = "working"
+	AgentOffline = "offline"
+)
+
+// ValidAgentStatuses is the set of recognized agent statuses.
+var ValidAgentStatuses = map[string]bool{
+	AgentIdle:    true,
+	AgentWorking: true,
+	AgentOffline: true,
+}
+
 // AgentStatus is computed at runtime for relay status.
 type AgentStatus struct {
 	Name          string        `json:"name"`
 	Task          string        `json:"task,omitempty"`
+	Skills        []string      `json:"skills,omitempty"`
+	CardStatus    string        `json:"card_status,omitempty"`
 	LastHeartbeat time.Time     `json:"last_heartbeat"`
 	HeartbeatAge  time.Duration `json:"-"`
 	Alive         bool          `json:"alive"`

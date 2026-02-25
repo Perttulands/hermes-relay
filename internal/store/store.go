@@ -55,9 +55,20 @@ func (d *Dir) Register(meta core.AgentMeta) error {
 }
 
 // Heartbeat atomically overwrites the heartbeat file with current timestamp.
+// If a card.json exists, it also updates the card's LastSeen field.
 func (d *Dir) Heartbeat(name string) error {
 	path := filepath.Join(d.AgentDir(name), "heartbeat")
-	return atomicWrite(path, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"))
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := atomicWrite(path, []byte(now+"\n")); err != nil {
+		return err
+	}
+	// Best-effort card update: if card exists, update LastSeen.
+	card, err := d.ReadCard(name)
+	if err == nil {
+		card.LastSeen = now
+		_ = d.writeCardRaw(card)
+	}
+	return nil
 }
 
 // ReadHeartbeat returns the parsed heartbeat time for an agent.
@@ -78,6 +89,68 @@ func (d *Dir) ReadMeta(name string) (core.AgentMeta, error) {
 	}
 	err = json.Unmarshal(data, &meta)
 	return meta, err
+}
+
+// WriteCard writes the agent card as agents/{name}/card.json (atomic write).
+// Name is required. If Status is set, it must be a valid agent status.
+// LastSeen is automatically set to the current time.
+func (d *Dir) WriteCard(card core.AgentCard) error {
+	if strings.TrimSpace(card.Name) == "" {
+		return fmt.Errorf("card name is required")
+	}
+	if card.Status != "" && !core.ValidAgentStatuses[card.Status] {
+		return fmt.Errorf("invalid agent status: %q", card.Status)
+	}
+	card.LastSeen = time.Now().UTC().Format(time.RFC3339)
+	return d.writeCardRaw(card)
+}
+
+// writeCardRaw writes the card without setting LastSeen or validating.
+func (d *Dir) writeCardRaw(card core.AgentCard) error {
+	dir := d.AgentDir(card.Name)
+	return atomicWriteJSON(filepath.Join(dir, "card.json"), card)
+}
+
+// ReadCard reads the agent card for an agent.
+func (d *Dir) ReadCard(name string) (core.AgentCard, error) {
+	var card core.AgentCard
+	data, err := os.ReadFile(filepath.Join(d.AgentDir(name), "card.json"))
+	if err != nil {
+		return card, err
+	}
+	err = json.Unmarshal(data, &card)
+	return card, err
+}
+
+// ListCards reads cards for all registered agents.
+// Agents without a card.json are silently skipped.
+func (d *Dir) ListCards() ([]core.AgentCard, error) {
+	agents, err := d.ListAgents()
+	if err != nil {
+		return nil, err
+	}
+	var cards []core.AgentCard
+	for _, name := range agents {
+		card, err := d.ReadCard(name)
+		if err != nil {
+			continue // no card yet
+		}
+		cards = append(cards, card)
+	}
+	return cards, nil
+}
+
+// ReadHeartbeatTime returns the best-known last-seen time for an agent.
+// Prefers card.json LastSeen; falls back to the heartbeat file.
+func (d *Dir) ReadHeartbeatTime(name string) (time.Time, error) {
+	card, err := d.ReadCard(name)
+	if err == nil && card.LastSeen != "" {
+		t, parseErr := time.Parse(time.RFC3339, card.LastSeen)
+		if parseErr == nil {
+			return t, nil
+		}
+	}
+	return d.ReadHeartbeat(name)
 }
 
 // UpdateTask updates the task field in an agent's meta.json.
@@ -716,7 +789,7 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 	}
 	m.Agents = len(agents)
 	for _, name := range agents {
-		hb, err := d.ReadHeartbeat(name)
+		hb, err := d.ReadHeartbeatTime(name)
 		if err != nil || time.Since(hb) > staleThreshold {
 			m.StaleAgents++
 		} else {

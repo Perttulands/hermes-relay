@@ -646,6 +646,195 @@ func TestSpawnWaitAndNotify(t *testing.T) {
 	}
 }
 
+// --- Agent card CLI tests ---
+
+func TestRegisterCreatesCard(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	code := run("register", "card-agent", "--skills", "go,rust", "--task", "br-42")
+	if code != 0 {
+		t.Fatalf("register failed with code %d", code)
+	}
+
+	// Verify card.json was created
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "card-agent", "card.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card core.AgentCard
+	json.Unmarshal(data, &card)
+	if card.Name != "card-agent" {
+		t.Errorf("expected name=card-agent, got %s", card.Name)
+	}
+	if len(card.Skills) != 2 || card.Skills[0] != "go" || card.Skills[1] != "rust" {
+		t.Errorf("unexpected skills: %v", card.Skills)
+	}
+	if card.Status != "working" {
+		t.Errorf("expected status=working (task provided), got %s", card.Status)
+	}
+	if card.CurrentTask != "br-42" {
+		t.Errorf("expected current_task=br-42, got %s", card.CurrentTask)
+	}
+}
+
+func TestRegisterCreatesCardNoSkills(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	code := run("register", "simple-agent")
+	if code != 0 {
+		t.Fatalf("register failed with code %d", code)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "simple-agent", "card.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card core.AgentCard
+	json.Unmarshal(data, &card)
+	if card.Status != "idle" {
+		t.Errorf("expected status=idle, got %s", card.Status)
+	}
+	if card.Skills != nil {
+		t.Errorf("expected nil skills, got %v", card.Skills)
+	}
+}
+
+func TestHeartbeatWithTaskSetsWorkingOnCard(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent")
+	code := run("heartbeat", "--task", "br-99")
+	if code != 0 {
+		t.Fatalf("heartbeat --task failed with code %d", code)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dir, "agents", "test-agent", "card.json"))
+	var card core.AgentCard
+	json.Unmarshal(data, &card)
+	if card.Status != "working" {
+		t.Errorf("expected status=working, got %s", card.Status)
+	}
+	if card.CurrentTask != "br-99" {
+		t.Errorf("expected current_task=br-99, got %s", card.CurrentTask)
+	}
+}
+
+func TestHeartbeatIdleClearsTask(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent", "--task", "br-42")
+	code := run("heartbeat", "--idle")
+	if code != 0 {
+		t.Fatalf("heartbeat --idle failed with code %d", code)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(dir, "agents", "test-agent", "card.json"))
+	var card core.AgentCard
+	json.Unmarshal(data, &card)
+	if card.Status != "idle" {
+		t.Errorf("expected status=idle, got %s", card.Status)
+	}
+	if card.CurrentTask != "" {
+		t.Errorf("expected empty current_task, got %s", card.CurrentTask)
+	}
+}
+
+func TestCardCommandSelf(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent", "--skills", "go,analysis")
+	code := run("card")
+	if code != 0 {
+		t.Fatalf("card (self) failed with code %d", code)
+	}
+}
+
+func TestCardCommandNamedAgent(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "other-agent", "--skills", "python")
+	code := run("card", "other-agent")
+	if code != 0 {
+		t.Fatalf("card other-agent failed with code %d", code)
+	}
+}
+
+func TestCardCommandJSON(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent", "--skills", "go")
+	code := run("card", "--json")
+	if code != 0 {
+		t.Fatalf("card --json failed with code %d", code)
+	}
+}
+
+func TestCardCommandAll(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "agent-1", "--skills", "go")
+	run("register", "agent-2", "--skills", "rust")
+
+	code := run("card", "--all")
+	if code != 0 {
+		t.Fatalf("card --all failed with code %d", code)
+	}
+}
+
+func TestCardCommandAllJSON(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "agent-1")
+	run("register", "agent-2")
+
+	code := run("card", "--all", "--json")
+	if code != 0 {
+		t.Fatalf("card --all --json failed with code %d", code)
+	}
+}
+
+func TestCardCommandMissing(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	// No agent registered — should fail
+	code := run("card", "nonexistent")
+	if code != 1 {
+		t.Errorf("expected exit 1 for missing card, got %d", code)
+	}
+}
+
+func TestStatusShowsCardData(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "agent-1", "--skills", "go,testing", "--task", "br-42")
+	code := run("status")
+	if code != 0 {
+		t.Errorf("status failed with code %d", code)
+	}
+}
+
+func TestRegisterJSONOutputIsCard(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	// When --json, register outputs the card
+	code := run("register", "json-card-agent", "--skills", "go", "--json")
+	if code != 0 {
+		t.Fatalf("register --json failed with code %d", code)
+	}
+}
+
 // Integration test: full multi-agent scenario
 func TestFullScenario(t *testing.T) {
 	_, cleanup := setup(t)

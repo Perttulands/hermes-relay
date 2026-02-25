@@ -126,6 +126,8 @@ func Run(args []string) int {
 		return ctx.cmdMetrics(cmdArgs)
 	case "spawn":
 		return ctx.cmdSpawn(cmdArgs)
+	case "card":
+		return ctx.cmdCard(cmdArgs)
 	default:
 		errorf("unknown command: %s", cmd)
 		usage()
@@ -184,7 +186,7 @@ func extractGlobalFlags(args []string) (globalFlagsT, []string) {
 
 func (c *context) cmdRegister(args []string) int {
 	if len(args) < 1 {
-		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>]")
+		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>] [--skills <s1,s2>]")
 		return 1
 	}
 	name := args[0]
@@ -194,21 +196,40 @@ func (c *context) cmdRegister(args []string) int {
 	}
 	flags := parseFlags(args[1:])
 
+	now := time.Now().UTC().Format(time.RFC3339)
 	meta := core.AgentMeta{
 		Name:         name,
 		Program:      flags["program"],
 		Model:        flags["model"],
 		Task:         flags["task"],
 		Bead:         flags["bead"],
-		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+		RegisteredAt: now,
 	}
 	if err := c.store.Register(meta); err != nil {
 		errorf("register: %v", err)
 		return 1
 	}
 
+	// Create agent card alongside meta.json.
+	card := core.AgentCard{
+		Name:         name,
+		Status:       core.AgentIdle,
+		RegisteredAt: now,
+	}
+	if skills := flags["skills"]; skills != "" {
+		card.Skills = strings.Split(skills, ",")
+	}
+	if task := flags["task"]; task != "" {
+		card.CurrentTask = task
+		card.Status = core.AgentWorking
+	}
+	if err := c.store.WriteCard(card); err != nil {
+		errorf("register: write card: %v", err)
+		return 1
+	}
+
 	if c.json {
-		outputJSON(meta)
+		outputJSON(card)
 	} else if !c.quiet {
 		fmt.Printf("registered agent %s\n", name)
 	}
@@ -217,6 +238,8 @@ func (c *context) cmdRegister(args []string) int {
 
 func (c *context) cmdHeartbeat(args []string) int {
 	flags := parseFlags(args)
+	idle := flagBool(args, "--idle")
+
 	if err := c.store.Heartbeat(c.agent); err != nil {
 		errorf("heartbeat: %v", err)
 		return 1
@@ -225,6 +248,25 @@ func (c *context) cmdHeartbeat(args []string) int {
 		if err := c.store.UpdateTask(c.agent, task); err != nil {
 			errorf("update task: %v", err)
 			return 1
+		}
+		// Update card with working status + task.
+		card, err := c.store.ReadCard(c.agent)
+		if err == nil {
+			card.CurrentTask = task
+			card.Status = core.AgentWorking
+			if writeErr := c.store.WriteCard(card); writeErr != nil {
+				errorf("heartbeat: update card: %v", writeErr)
+			}
+		}
+	} else if idle {
+		// Clear task and set idle on card.
+		card, err := c.store.ReadCard(c.agent)
+		if err == nil {
+			card.CurrentTask = ""
+			card.Status = core.AgentIdle
+			if writeErr := c.store.WriteCard(card); writeErr != nil {
+				errorf("heartbeat: update card: %v", writeErr)
+			}
 		}
 	}
 	if !c.quiet {
@@ -465,16 +507,19 @@ func (c *context) cmdStatus(args []string) int {
 		}
 		var agentStatuses []core.AgentStatus
 		for _, name := range agents {
-			hb, err := c.store.ReadHeartbeat(name)
+			hb, err := c.store.ReadHeartbeatTime(name)
+			card, cardErr := c.store.ReadCard(name)
 			meta, metaErr := c.store.ReadMeta(name)
-			if metaErr != nil {
-				errorf("status: read meta for %s: %v", name, metaErr)
-			}
 			status := core.AgentStatus{
 				Name:  name,
 				Alive: err == nil && time.Since(hb) < staleThreshold,
 			}
-			if metaErr == nil {
+			// Prefer card data over meta for task/skills/status.
+			if cardErr == nil {
+				status.Task = card.CurrentTask
+				status.Skills = card.Skills
+				status.CardStatus = card.Status
+			} else if metaErr == nil {
 				status.Task = meta.Task
 			}
 			if err == nil {
@@ -494,13 +539,22 @@ func (c *context) cmdStatus(args []string) int {
 	aliveCount, staleCount := 0, 0
 	fmt.Println("AGENTS")
 	for _, name := range agents {
-		hb, err := c.store.ReadHeartbeat(name)
+		hb, err := c.store.ReadHeartbeatTime(name)
+		card, cardErr := c.store.ReadCard(name)
 		meta, metaErr := c.store.ReadMeta(name)
 		task := ""
-		if metaErr != nil {
-			errorf("status: read meta for %s: %v", name, metaErr)
-		} else {
+		cardStatus := ""
+		skills := ""
+		if cardErr == nil {
+			task = card.CurrentTask
+			cardStatus = card.Status
+			if len(card.Skills) > 0 {
+				skills = strings.Join(card.Skills, ",")
+			}
+		} else if metaErr == nil {
 			task = meta.Task
+		} else {
+			errorf("status: read meta for %s: %v", name, metaErr)
 		}
 		if err != nil {
 			staleCount++
@@ -508,12 +562,19 @@ func (c *context) cmdStatus(args []string) int {
 			continue
 		}
 		age := time.Since(hb)
+		extra := ""
+		if cardStatus != "" {
+			extra += fmt.Sprintf(" status: %s", cardStatus)
+		}
+		if skills != "" {
+			extra += fmt.Sprintf(" skills: [%s]", skills)
+		}
 		if age > staleThreshold {
 			staleCount++
-			fmt.Printf("  %-20s STALE   last heartbeat: %-8s task: %s\n", name, formatAge(age), task)
+			fmt.Printf("  %-20s STALE   last heartbeat: %-8s task: %s%s\n", name, formatAge(age), task, extra)
 		} else {
 			aliveCount++
-			fmt.Printf("  %-20s alive   last heartbeat: %-8s task: %s\n", name, formatAge(age), task)
+			fmt.Printf("  %-20s alive   last heartbeat: %-8s task: %s%s\n", name, formatAge(age), task, extra)
 		}
 	}
 	fmt.Printf("  (%d alive, %d stale)\n", aliveCount, staleCount)
@@ -1037,6 +1098,68 @@ func (c *context) cmdMetrics(args []string) int {
 	return 0
 }
 
+func (c *context) cmdCard(args []string) int {
+	positional := flagPositional(args)
+	listAll := flagBool(args, "--all")
+
+	if listAll {
+		cards, err := c.store.ListCards()
+		if err != nil {
+			errorf("card: list cards: %v", err)
+			return 1
+		}
+		if c.json {
+			outputJSON(cards)
+		} else {
+			if len(cards) == 0 {
+				if !c.quiet {
+					fmt.Println("no agent cards")
+				}
+			} else {
+				for _, card := range cards {
+					printCard(card)
+				}
+			}
+		}
+		return 0
+	}
+
+	// Determine target agent: positional arg or self.
+	target := c.agent
+	if len(positional) > 0 {
+		target = positional[0]
+	}
+
+	card, err := c.store.ReadCard(target)
+	if err != nil {
+		errorf("card: %v", err)
+		return 1
+	}
+
+	if c.json {
+		outputJSON(card)
+	} else {
+		printCard(card)
+	}
+	return 0
+}
+
+func printCard(card core.AgentCard) {
+	skills := "(none)"
+	if len(card.Skills) > 0 {
+		skills = strings.Join(card.Skills, ", ")
+	}
+	status := card.Status
+	if status == "" {
+		status = "unknown"
+	}
+	task := card.CurrentTask
+	if task == "" {
+		task = "(none)"
+	}
+	fmt.Printf("  %-20s status: %-10s task: %-20s skills: %s\n", card.Name, status, task, skills)
+}
+
 func (c *context) cmdSpawn(args []string) int {
 	flags := parseFlags(args)
 	repo := strings.TrimSpace(flags["repo"])
@@ -1216,7 +1339,9 @@ COMMANDS:
   relay status                        Show all agents, heartbeats, reservations
   relay register <name> [flags]       Register agent identity
   relay heartbeat                     Update agent heartbeat
-  relay metrics [flags]                Show aggregate system metrics
+  relay card [agent]                   Show an agent's card (default: self)
+  relay card --all                    Show all agent cards
+  relay metrics [flags]               Show aggregate system metrics
   relay gc                            Clean up expired reservations and stale agents
   relay version                       Print version
 
@@ -1271,7 +1396,7 @@ func parseFlags(args []string) map[string]string {
 			if key == "broadcast" || key == "wake" || key == "check" || key == "force" ||
 				key == "shared" || key == "all" || key == "unread" || key == "mark-read" ||
 				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
-				key == "loop" || key == "wait" {
+				key == "loop" || key == "wait" || key == "idle" {
 				continue
 			}
 			flags[key] = args[i+1]
@@ -1298,7 +1423,7 @@ func flagPositional(args []string) []string {
 		"--broadcast": true, "--wake": true, "--check": true, "--force": true,
 		"--shared": true, "--all": true, "--unread": true, "--mark-read": true,
 		"--dry-run": true, "--expired-only": true, "--expired": true, "--tail": true,
-		"--json": true, "--quiet": true, "--loop": true, "--wait": true,
+		"--json": true, "--quiet": true, "--loop": true, "--wait": true, "--idle": true,
 	}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
