@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -204,5 +205,131 @@ func TestReadFilterByFrom(t *testing.T) {
 	}
 	if msgs[0].From != "sender-a" || msgs[0].Body != "from-a" {
 		t.Fatalf("unexpected message: %+v", msgs[0])
+	}
+}
+
+func TestSendTyped(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "sender", "target")
+
+	t.Setenv("RELAY_AGENT", "sender")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := json.RawMessage(`{"exit_code":0,"summary":"all tests pass"}`)
+	if err := c.SendTyped("target", "task complete", core.TypeTaskResult, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read as target and verify
+	t.Setenv("RELAY_AGENT", "target")
+	receiver, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := receiver.Read(ReadOpts{Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Type != core.TypeTaskResult {
+		t.Errorf("expected type=%s, got %q", core.TypeTaskResult, msgs[0].Type)
+	}
+	if string(msgs[0].Payload) != string(payload) {
+		t.Errorf("unexpected payload: %s", msgs[0].Payload)
+	}
+}
+
+func TestSendTypedWithoutPayload(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "sender", "target")
+
+	t.Setenv("RELAY_AGENT", "sender")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Type without payload
+	if err := c.SendTyped("target", "status update", core.TypeStatus, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("RELAY_AGENT", "target")
+	receiver, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := receiver.Read(ReadOpts{Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Type != core.TypeStatus {
+		t.Errorf("expected type=%s, got %q", core.TypeStatus, msgs[0].Type)
+	}
+}
+
+func TestReadFilterByType(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "sender", "reader")
+
+	t.Setenv("RELAY_AGENT", "sender")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send three messages with different types
+	c.SendTyped("reader", "alert msg", core.TypeAlert, nil)
+	c.SendTyped("reader", "chat msg", core.TypeChat, nil)
+	c.Send("reader", "plain msg") // no type
+
+	t.Setenv("RELAY_AGENT", "reader")
+	receiver, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Filter by alert
+	msgs, err := receiver.Read(ReadOpts{Type: core.TypeAlert, Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 alert message, got %d", len(msgs))
+	}
+	if msgs[0].Type != core.TypeAlert {
+		t.Errorf("expected type=alert, got %q", msgs[0].Type)
+	}
+
+	// No filter returns all
+	msgs, err = receiver.Read(ReadOpts{Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+}
+
+func TestSendTypedEmptyRecipient(t *testing.T) {
+	root, _ := setupStore(t)
+
+	t.Setenv("RELAY_AGENT", "sender")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = c.SendTyped("", "body", core.TypeChat, nil)
+	if err == nil {
+		t.Fatal("expected error for empty recipient")
 	}
 }

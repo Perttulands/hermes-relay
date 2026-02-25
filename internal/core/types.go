@@ -1,6 +1,27 @@
 package core
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// Message types
+const (
+	TypeTaskResult = "task_result"
+	TypeRequest    = "request"
+	TypeAlert      = "alert"
+	TypeStatus     = "status"
+	TypeChat       = "chat"
+)
+
+// ValidTypes is the set of recognized message types.
+var ValidTypes = map[string]bool{
+	TypeTaskResult: true,
+	TypeRequest:    true,
+	TypeAlert:      true,
+	TypeStatus:     true,
+	TypeChat:       true,
+}
 
 // Message is a single NDJSON line in an agent's inbox.
 type Message struct {
@@ -13,7 +34,9 @@ type Message struct {
 	Thread   string   `json:"thread,omitempty"`
 	Priority string   `json:"priority,omitempty"`
 	ReplyTo  string   `json:"reply_to,omitempty"`
-	Tags     []string `json:"tags,omitempty"`
+	Tags     []string        `json:"tags,omitempty"`
+	Type     string          `json:"type,omitempty"`    // message type: task_result, request, alert, status, chat
+	Payload  json.RawMessage `json:"payload,omitempty"` // structured data (type-specific)
 }
 
 // AgentMeta is stored in agents/<name>/meta.json.

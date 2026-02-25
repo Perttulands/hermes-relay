@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +136,101 @@ func TestMessageValidateRejectsEmptyTag(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "message.tags[1]") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMessageValidateValidTypes(t *testing.T) {
+	for _, typ := range []string{TypeTaskResult, TypeRequest, TypeAlert, TypeStatus, TypeChat} {
+		msg := Message{
+			ID:   NewULID(),
+			TS:   time.Now().UTC().Format(time.RFC3339),
+			From: "agent-a",
+			To:   "agent-b",
+			Body: "hello",
+			Type: typ,
+		}
+		if err := msg.Validate(); err != nil {
+			t.Errorf("type %q should be valid, got error: %v", typ, err)
+		}
+	}
+}
+
+func TestMessageValidateInvalidType(t *testing.T) {
+	msg := Message{
+		ID:   NewULID(),
+		TS:   time.Now().UTC().Format(time.RFC3339),
+		From: "agent-a",
+		To:   "agent-b",
+		Body: "hello",
+		Type: "bogus",
+	}
+	err := msg.Validate()
+	if err == nil {
+		t.Fatalf("expected validation error for invalid type")
+	}
+	if !strings.Contains(err.Error(), "not a recognized type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMessageValidateEmptyTypeIsValid(t *testing.T) {
+	msg := Message{
+		ID:   NewULID(),
+		TS:   time.Now().UTC().Format(time.RFC3339),
+		From: "agent-a",
+		To:   "agent-b",
+		Body: "hello",
+	}
+	if err := msg.Validate(); err != nil {
+		t.Fatalf("empty type should be valid (backward compat), got error: %v", err)
+	}
+}
+
+func TestMessageValidateValidPayload(t *testing.T) {
+	msg := Message{
+		ID:      NewULID(),
+		TS:      time.Now().UTC().Format(time.RFC3339),
+		From:    "agent-a",
+		To:      "agent-b",
+		Body:    "hello",
+		Type:    TypeTaskResult,
+		Payload: json.RawMessage(`{"status":"success","exit_code":0}`),
+	}
+	if err := msg.Validate(); err != nil {
+		t.Fatalf("valid payload should pass, got error: %v", err)
+	}
+}
+
+func TestMessageValidateInvalidPayloadJSON(t *testing.T) {
+	msg := Message{
+		ID:      NewULID(),
+		TS:      time.Now().UTC().Format(time.RFC3339),
+		From:    "agent-a",
+		To:      "agent-b",
+		Body:    "hello",
+		Type:    TypeTaskResult,
+		Payload: json.RawMessage(`{not valid json}`),
+	}
+	err := msg.Validate()
+	if err == nil {
+		t.Fatalf("expected validation error for invalid payload JSON")
+	}
+	if !strings.Contains(err.Error(), "message.payload must be valid JSON") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestMessageValidatePayloadWithoutType(t *testing.T) {
+	// Payload without type is allowed (no coupling)
+	msg := Message{
+		ID:      NewULID(),
+		TS:      time.Now().UTC().Format(time.RFC3339),
+		From:    "agent-a",
+		To:      "agent-b",
+		Body:    "hello",
+		Payload: json.RawMessage(`{"data":"value"}`),
+	}
+	if err := msg.Validate(); err != nil {
+		t.Fatalf("payload without type should be valid, got error: %v", err)
 	}
 }

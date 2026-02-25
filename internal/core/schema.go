@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -49,6 +50,12 @@ func (m Message) Validate() error {
 	}
 	if m.ReplyTo != "" && strings.TrimSpace(m.ReplyTo) == "" {
 		return fmt.Errorf("message.reply_to must not be whitespace")
+	}
+	if m.Type != "" && !ValidTypes[m.Type] {
+		return fmt.Errorf("message.type %q is not a recognized type", m.Type)
+	}
+	if len(m.Payload) > 0 && !json.Valid(m.Payload) {
+		return fmt.Errorf("message.payload must be valid JSON")
 	}
 	return nil
 }

@@ -2,6 +2,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ type ReadOpts struct {
 	Unread   bool
 	Last     int
 	MarkRead bool
+	Type     string
 }
 
 // Client wraps relay store operations for agent-centric messaging.
@@ -90,6 +92,38 @@ func (c *Client) Send(to, body string) error {
 	return c.store.Send(msg)
 }
 
+// SendTyped sends a typed message with an optional structured payload.
+// msgType must be one of the recognized types (task_result, request, alert, status, chat).
+// payload should be valid JSON or nil.
+func (c *Client) SendTyped(to, body, msgType string, payload json.RawMessage) error {
+	if strings.TrimSpace(to) == "" {
+		return fmt.Errorf("recipient is required")
+	}
+
+	subject := body
+	if len(subject) > 80 {
+		subject = subject[:80]
+	}
+
+	msg := core.Message{
+		ID:       core.NewULID(),
+		TS:       time.Now().UTC().Format(time.RFC3339),
+		From:     c.agent,
+		To:       to,
+		Subject:  subject,
+		Body:     body,
+		Priority: "normal",
+	}
+	if msgType != "" {
+		msg.Type = msgType
+	}
+	if len(payload) > 0 {
+		msg.Payload = payload
+	}
+
+	return c.store.Send(msg)
+}
+
 // Read returns inbox messages for the current agent.
 //
 // If Last is unset and Unread is false, it defaults to 20 (same as CLI).
@@ -101,6 +135,7 @@ func (c *Client) Read(opts ReadOpts) ([]Message, error) {
 		Unread:   opts.Unread,
 		Last:     opts.Last,
 		MarkRead: opts.MarkRead,
+		Type:     opts.Type,
 	}
 	if storeOpts.Last == 0 && !storeOpts.Unread {
 		storeOpts.Last = 20

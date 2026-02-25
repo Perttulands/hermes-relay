@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -409,5 +411,110 @@ func TestStatusWithStaleThreshold(t *testing.T) {
 	code := run("status", "--stale", "1s")
 	if code != 0 {
 		t.Errorf("expected 0, got %d", code)
+	}
+}
+
+func TestSendWithTypeAndPayload(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "target")
+
+	code := run("send", "target", "task done",
+		"--type", "task_result",
+		"--payload", `{"exit_code":0,"files_changed":3}`)
+	if code != 0 {
+		t.Fatalf("send with type/payload failed with code %d", code)
+	}
+
+	// Read the inbox and verify the message was stored with type and payload
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "target", "inbox.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg core.Message
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != "task_result" {
+		t.Errorf("expected type=task_result, got %q", msg.Type)
+	}
+	if string(msg.Payload) != `{"exit_code":0,"files_changed":3}` {
+		t.Errorf("unexpected payload: %s", msg.Payload)
+	}
+}
+
+func TestSendWithTypeOnly(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "target")
+
+	code := run("send", "target", "status update", "--type", "status")
+	if code != 0 {
+		t.Errorf("expected 0, got %d", code)
+	}
+}
+
+func TestSendWithoutTypeStillWorks(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "target")
+
+	// Backward compat: no --type flag
+	code := run("send", "target", "plain message")
+	if code != 0 {
+		t.Errorf("expected 0, got %d", code)
+	}
+}
+
+func TestReadWithTypeFilter(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "sender")
+
+	// Send messages with different types
+	run("send", "test-agent", "alert msg", "--agent", "sender", "--type", "alert")
+	run("send", "test-agent", "chat msg", "--agent", "sender", "--type", "chat")
+	run("send", "test-agent", "plain msg", "--agent", "sender")
+
+	// Read filtering by type=alert
+	code := run("read", "--type", "alert", "--json")
+	if code != 0 {
+		t.Fatalf("read --type alert failed with code %d", code)
+	}
+
+	// Read all (no filter)
+	code = run("read", "--json")
+	if code != 0 {
+		t.Fatalf("read all failed with code %d", code)
+	}
+}
+
+func TestSendInvalidPayloadJSON(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "target")
+
+	// Invalid JSON payload should fail validation
+	code := run("send", "target", "bad payload", "--type", "task_result", "--payload", `{not json}`)
+	if code != 1 {
+		t.Errorf("expected exit 1 for invalid payload JSON, got %d", code)
+	}
+}
+
+func TestSendInvalidType(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "target")
+
+	// Invalid type should fail validation
+	code := run("send", "target", "bad type", "--type", "nonexistent")
+	if code != 1 {
+		t.Errorf("expected exit 1 for invalid type, got %d", code)
 	}
 }

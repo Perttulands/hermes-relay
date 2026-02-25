@@ -678,6 +678,62 @@ func TestULIDOrdering(t *testing.T) {
 	}
 }
 
+func TestReadInboxFilterByType(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Send messages with different types
+	for _, typ := range []string{core.TypeTaskResult, core.TypeAlert, core.TypeChat, ""} {
+		msg := core.Message{
+			ID:   core.NewULID(),
+			TS:   time.Now().UTC().Format(time.RFC3339),
+			From: "bob",
+			To:   "alice",
+			Body: fmt.Sprintf("msg type=%s", typ),
+			Type: typ,
+		}
+		if err := d.Send(msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Filter by task_result
+	msgs, err := d.ReadInbox("alice", ReadOpts{Type: core.TypeTaskResult})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 task_result message, got %d", len(msgs))
+	}
+
+	// Filter by alert
+	msgs, err = d.ReadInbox("alice", ReadOpts{Type: core.TypeAlert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 alert message, got %d", len(msgs))
+	}
+
+	// No filter returns all
+	msgs, err = d.ReadInbox("alice", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 4 {
+		t.Errorf("expected 4 total messages, got %d", len(msgs))
+	}
+
+	// Filter by type that has no matches
+	msgs, err = d.ReadInbox("alice", ReadOpts{Type: core.TypeRequest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 request messages, got %d", len(msgs))
+	}
+}
+
 func TestReservationHash(t *testing.T) {
 	h1 := ReservationHash("/repo", "src/**")
 	h2 := ReservationHash("/repo", "src/**")

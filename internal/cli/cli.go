@@ -281,6 +281,9 @@ func (c *context) cmdSend(args []string) int {
 		priority = "normal"
 	}
 
+	msgType := flags["type"]
+	payload := flags["payload"]
+
 	if broadcast {
 		agents, err := c.store.ListAgents()
 		if err != nil {
@@ -303,6 +306,12 @@ func (c *context) cmdSend(args []string) int {
 				Priority: priority,
 				Tags:     tags,
 			}
+			if msgType != "" {
+				msg.Type = msgType
+			}
+			if payload != "" {
+				msg.Payload = json.RawMessage(payload)
+			}
 			if err := c.store.Send(msg); err != nil {
 				errorf("send to %s: %v", name, err)
 			} else {
@@ -323,6 +332,12 @@ func (c *context) cmdSend(args []string) int {
 			Thread:   flags["thread"],
 			Priority: priority,
 			Tags:     tags,
+		}
+		if msgType != "" {
+			msg.Type = msgType
+		}
+		if payload != "" {
+			msg.Payload = json.RawMessage(payload)
 		}
 		if err := c.store.Send(msg); err != nil {
 			errorf("send: %v", err)
@@ -361,6 +376,7 @@ func (c *context) cmdRead(args []string) int {
 	opts := store.ReadOpts{
 		From:     flags["from"],
 		Thread:   flags["thread"],
+		Type:     flags["type"],
 		Unread:   flagBool(args, "--unread"),
 		MarkRead: flagBool(args, "--mark-read"),
 	}
@@ -1203,6 +1219,25 @@ COMMANDS:
   relay metrics [flags]                Show aggregate system metrics
   relay gc                            Clean up expired reservations and stale agents
   relay version                       Print version
+
+SEND FLAGS:
+  --subject <text>   Message subject (default: first 80 chars of body)
+  --thread <id>      Thread identifier
+  --priority <p>     Priority level (default: normal)
+  --tag <t1,t2>      Comma-separated tags
+  --type <type>      Message type: task_result, request, alert, status, chat
+  --payload <json>   Structured JSON payload (type-specific)
+  --broadcast        Send to all registered agents
+  --wake             Wake target agent after sending
+
+READ FLAGS:
+  --from <agent>     Filter by sender
+  --thread <id>      Filter by thread
+  --type <type>      Filter by message type
+  --since <time>     Filter messages after time (duration, RFC3339, or date)
+  --last <n>         Show last N messages (default: 20)
+  --unread           Show only unread messages
+  --mark-read        Mark returned messages as read
 
 GLOBAL FLAGS:
   --agent <name>     Agent identity (default: $RELAY_AGENT or hostname)

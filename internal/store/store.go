@@ -316,6 +316,7 @@ type ReadOpts struct {
 	Unread   bool
 	Last     int
 	MarkRead bool
+	Type     string
 }
 
 func (o ReadOpts) match(msg core.Message) bool {
@@ -330,6 +331,9 @@ func (o ReadOpts) match(msg core.Message) bool {
 		if err != nil || t.Before(o.Since) {
 			return false
 		}
+	}
+	if o.Type != "" && msg.Type != o.Type {
+		return false
 	}
 	return true
 }
