@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	entropy     = ulid.Monotonic(rand.Reader, 0)
-	entropyMu   sync.Mutex
+	entropy   = ulid.Monotonic(rand.Reader, 0)
+	entropyMu sync.Mutex
 )
 
 // NewULID generates a new ULID using monotonic entropy.

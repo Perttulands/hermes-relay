@@ -25,15 +25,15 @@ var ValidTypes = map[string]bool{
 
 // Message is a single NDJSON line in an agent's inbox.
 type Message struct {
-	ID       string   `json:"id"`
-	TS       string   `json:"ts"`
-	From     string   `json:"from"`
-	To       string   `json:"to"`
-	Subject  string   `json:"subject,omitempty"`
-	Body     string   `json:"body"`
-	Thread   string   `json:"thread,omitempty"`
-	Priority string   `json:"priority,omitempty"`
-	ReplyTo  string   `json:"reply_to,omitempty"`
+	ID       string          `json:"id"`
+	TS       string          `json:"ts"`
+	From     string          `json:"from"`
+	To       string          `json:"to"`
+	Subject  string          `json:"subject,omitempty"`
+	Body     string          `json:"body"`
+	Thread   string          `json:"thread,omitempty"`
+	Priority string          `json:"priority,omitempty"`
+	ReplyTo  string          `json:"reply_to,omitempty"`
 	Tags     []string        `json:"tags,omitempty"`
 	Type     string          `json:"type,omitempty"`    // message type: task_result, request, alert, status, chat
 	Payload  json.RawMessage `json:"payload,omitempty"` // structured data (type-specific)
