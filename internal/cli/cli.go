@@ -1299,11 +1299,9 @@ func resolveWorkspaceDir() string {
 		if st, statErr := os.Stat(candidate); statErr == nil && st.IsDir() {
 			return candidate
 		}
-		// best-effort: directory doesn't exist yet; return the path anyway as fallback
-		return candidate
 	}
-	// best-effort: home dir unavailable, use relative path
-	return filepath.Join("athena", "workspace")
+	// best-effort: workspace not found, use cwd
+	return "."
 }
 
 func waitForSpawnResult(repo, beadID string) (string, error) {

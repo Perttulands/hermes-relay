@@ -555,6 +555,7 @@ func TestSpawnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DISPATCH_SCRIPT", dispatch)
+	t.Setenv("ATHENA_WORKSPACE", t.TempDir())
 
 	repo := t.TempDir()
 	var calls []string
@@ -592,6 +593,7 @@ func TestSpawnWaitAndNotify(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DISPATCH_SCRIPT", dispatch)
+	t.Setenv("ATHENA_WORKSPACE", t.TempDir())
 
 	origPoll := spawnPollInterval
 	origTimeout := spawnPollTimeout
