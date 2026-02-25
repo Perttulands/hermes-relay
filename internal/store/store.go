@@ -46,10 +46,10 @@ func (d *Dir) AgentDir(name string) string {
 func (d *Dir) Register(meta core.AgentMeta) error {
 	dir := d.AgentDir(meta.Name)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+		return fmt.Errorf("create agent dir %s: %w", meta.Name, err)
 	}
 	if err := atomicWriteJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
-		return err
+		return fmt.Errorf("write meta for %s: %w", meta.Name, err)
 	}
 	return d.Heartbeat(meta.Name)
 }
@@ -60,7 +60,7 @@ func (d *Dir) Heartbeat(name string) error {
 	path := filepath.Join(d.AgentDir(name), "heartbeat")
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := atomicWrite(path, []byte(now+"\n")); err != nil {
-		return err
+		return fmt.Errorf("write heartbeat for %s: %w", name, err)
 	}
 	// Best-effort card update: if card exists, update LastSeen.
 	card, err := d.ReadCard(name)
@@ -75,9 +75,13 @@ func (d *Dir) Heartbeat(name string) error {
 func (d *Dir) ReadHeartbeat(name string) (time.Time, error) {
 	data, err := os.ReadFile(filepath.Join(d.AgentDir(name), "heartbeat"))
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, fmt.Errorf("read heartbeat for %s: %w", name, err)
 	}
-	return time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	t, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if parseErr != nil {
+		return time.Time{}, fmt.Errorf("parse heartbeat for %s: %w", name, parseErr)
+	}
+	return t, nil
 }
 
 // ReadMeta reads an agent's meta.json.
@@ -85,10 +89,12 @@ func (d *Dir) ReadMeta(name string) (core.AgentMeta, error) {
 	var meta core.AgentMeta
 	data, err := os.ReadFile(filepath.Join(d.AgentDir(name), "meta.json"))
 	if err != nil {
-		return meta, err
+		return meta, fmt.Errorf("read meta for %s: %w", name, err)
 	}
-	err = json.Unmarshal(data, &meta)
-	return meta, err
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return meta, fmt.Errorf("parse meta for %s: %w", name, err)
+	}
+	return meta, nil
 }
 
 // WriteCard writes the agent card as agents/{name}/card.json (atomic write).
@@ -116,10 +122,12 @@ func (d *Dir) ReadCard(name string) (core.AgentCard, error) {
 	var card core.AgentCard
 	data, err := os.ReadFile(filepath.Join(d.AgentDir(name), "card.json"))
 	if err != nil {
-		return card, err
+		return card, fmt.Errorf("read card for %s: %w", name, err)
 	}
-	err = json.Unmarshal(data, &card)
-	return card, err
+	if err := json.Unmarshal(data, &card); err != nil {
+		return card, fmt.Errorf("parse card for %s: %w", name, err)
+	}
+	return card, nil
 }
 
 // ListCards reads cards for all registered agents.
@@ -127,7 +135,7 @@ func (d *Dir) ReadCard(name string) (core.AgentCard, error) {
 func (d *Dir) ListCards() ([]core.AgentCard, error) {
 	agents, err := d.ListAgents()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list agents for cards: %w", err)
 	}
 	var cards []core.AgentCard
 	for _, name := range agents {
@@ -157,7 +165,7 @@ func (d *Dir) ReadHeartbeatTime(name string) (time.Time, error) {
 func (d *Dir) UpdateTask(name, task string) error {
 	meta, err := d.ReadMeta(name)
 	if err != nil {
-		return err
+		return fmt.Errorf("update task for %s: %w", name, err)
 	}
 	meta.Task = task
 	return atomicWriteJSON(filepath.Join(d.AgentDir(name), "meta.json"), meta)
@@ -170,7 +178,7 @@ func (d *Dir) ListAgents() ([]string, error) {
 		if os.IsNotExist(err) {
 			return []string{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read agents dir: %w", err)
 	}
 	var names []string
 	for _, e := range entries {
@@ -200,7 +208,7 @@ func (d *Dir) Send(msg core.Message) error {
 		msg.Priority = "normal"
 	}
 	if err := msg.Validate(); err != nil {
-		return err
+		return fmt.Errorf("validate message to %s: %w", msg.To, err)
 	}
 
 	dir := d.AgentDir(msg.To)
@@ -210,7 +218,7 @@ func (d *Dir) Send(msg core.Message) error {
 
 	line, err := json.Marshal(msg)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal message to %s: %w", msg.To, err)
 	}
 	line = append(line, '\n')
 
@@ -227,7 +235,7 @@ func (d *Dir) ReadInbox(agent string, opts ReadOpts) ([]core.Message, error) {
 		if os.IsNotExist(err) {
 			return []core.Message{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read inbox for %s: %w", agent, err)
 	}
 
 	var offset int64
@@ -288,16 +296,16 @@ func (d *Dir) WatchInbox(agent string, offset int64) ([]core.Message, int64, err
 		if os.IsNotExist(err) {
 			return nil, offset, fmt.Errorf("agent %q not registered", agent)
 		}
-		return nil, offset, err
+		return nil, offset, fmt.Errorf("stat agent dir for %s: %w", agent, err)
 	}
 
 	inbox := filepath.Join(agentDir, "inbox.jsonl")
 	f, err := os.OpenFile(inbox, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, fmt.Errorf("open inbox for %s: %w", agent, err)
 	}
 	if err := f.Close(); err != nil {
-		return nil, offset, err
+		return nil, offset, fmt.Errorf("close inbox for %s: %w", agent, err)
 	}
 
 	// If caller starts from zero but file already contains history, watch only new writes.
@@ -309,12 +317,12 @@ func (d *Dir) WatchInbox(agent string, offset int64) ([]core.Message, int64, err
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, fmt.Errorf("create watcher for %s: %w", agent, err)
 	}
 	defer watcher.Close()
 
 	if err := watcher.Add(inbox); err != nil {
-		return nil, offset, err
+		return nil, offset, fmt.Errorf("watch inbox for %s: %w", agent, err)
 	}
 
 	for {
@@ -332,7 +340,7 @@ func (d *Dir) WatchInbox(agent string, offset int64) ([]core.Message, int64, err
 
 			msgs, newOffset, err := readMessagesSince(inbox, offset)
 			if err != nil {
-				return nil, offset, err
+				return nil, offset, fmt.Errorf("read new messages for %s: %w", agent, err)
 			}
 			offset = newOffset
 			if len(msgs) > 0 {
@@ -342,7 +350,7 @@ func (d *Dir) WatchInbox(agent string, offset int64) ([]core.Message, int64, err
 			if !ok {
 				return nil, offset, fmt.Errorf("watcher closed")
 			}
-			return nil, offset, err
+			return nil, offset, fmt.Errorf("watch inbox for %s: %w", agent, err)
 		}
 	}
 }
@@ -350,7 +358,7 @@ func (d *Dir) WatchInbox(agent string, offset int64) ([]core.Message, int64, err
 func readMessagesSince(inbox string, offset int64) ([]core.Message, int64, error) {
 	data, err := os.ReadFile(inbox)
 	if err != nil {
-		return nil, offset, err
+		return nil, offset, fmt.Errorf("read inbox file: %w", err)
 	}
 	if offset > int64(len(data)) {
 		offset = int64(len(data))
@@ -414,7 +422,7 @@ func (o ReadOpts) match(msg core.Message) bool {
 func (d *Dir) readCursor(agent string) (int64, error) {
 	data, err := os.ReadFile(filepath.Join(d.AgentDir(agent), "cursor"))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read cursor for %s: %w", agent, err)
 	}
 	var offset int64
 	fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &offset)
@@ -439,7 +447,7 @@ func (d *Dir) Reserve(res core.Reservation) error {
 
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal reservation %s: %w", res.Pattern, err)
 	}
 	data = append(data, '\n')
 
@@ -453,14 +461,17 @@ func (d *Dir) Reserve(res core.Reservation) error {
 			}
 			return fmt.Errorf("conflict: %s already reserved", res.Pattern)
 		}
-		return err
+		return fmt.Errorf("create reservation file for %s: %w", res.Pattern, err)
 	}
 	_, err = f.Write(data)
 	closeErr := f.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("write reservation %s: %w", res.Pattern, err)
 	}
-	return closeErr
+	if closeErr != nil {
+		return fmt.Errorf("close reservation file %s: %w", res.Pattern, closeErr)
+	}
+	return nil
 }
 
 // Release removes a reservation. Returns error if not owned by agent.
@@ -482,7 +493,7 @@ func (d *Dir) Release(agent, repo, pattern string) error {
 func (d *Dir) ReleaseAll(agent string) (int, error) {
 	reservations, err := d.ListReservations()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("list reservations for release-all: %w", err)
 	}
 	count := 0
 	for _, r := range reservations {
@@ -491,7 +502,7 @@ func (d *Dir) ReleaseAll(agent string) (int, error) {
 			path := filepath.Join(d.Root, "reservations", hash+".json")
 			if err := os.Remove(path); err == nil {
 				count++
-			}
+			} // best-effort: skip reservations that can't be removed
 		}
 	}
 	return count, nil
@@ -505,7 +516,7 @@ func (d *Dir) ListReservations() ([]core.Reservation, error) {
 		if os.IsNotExist(err) {
 			return []core.Reservation{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read reservations dir: %w", err)
 	}
 	var result []core.Reservation
 	for _, e := range entries {
@@ -525,10 +536,12 @@ func (d *Dir) readReservation(path string) (core.Reservation, error) {
 	var r core.Reservation
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return r, err
+		return r, fmt.Errorf("read reservation file %s: %w", filepath.Base(path), err)
 	}
-	err = json.Unmarshal(data, &r)
-	return r, err
+	if err := json.Unmarshal(data, &r); err != nil {
+		return r, fmt.Errorf("parse reservation file %s: %w", filepath.Base(path), err)
+	}
+	return r, nil
 }
 
 // CheckOverlap checks if a new pattern overlaps with any existing reservation
@@ -536,7 +549,7 @@ func (d *Dir) readReservation(path string) (core.Reservation, error) {
 func (d *Dir) CheckOverlap(agent, repo, pattern string) ([]core.Reservation, error) {
 	existing, err := d.ListReservations()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list reservations for overlap check: %w", err)
 	}
 	var conflicts []core.Reservation
 	for _, r := range existing {
@@ -627,20 +640,23 @@ func (d *Dir) CreateCommand(cmd core.Command) error {
 	path := filepath.Join(d.Root, "commands", cmd.ID+".json")
 	data, err := json.MarshalIndent(cmd, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal command %s: %w", cmd.ID, err)
 	}
 	data = append(data, '\n')
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("create command file %s: %w", cmd.ID, err)
 	}
 	_, err = f.Write(data)
 	closeErr := f.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("write command %s: %w", cmd.ID, err)
 	}
-	return closeErr
+	if closeErr != nil {
+		return fmt.Errorf("close command file %s: %w", cmd.ID, closeErr)
+	}
+	return nil
 }
 
 // ConsumeCommand claims a command using a .consumed sidecar (per review §1.3).
@@ -652,16 +668,16 @@ func (d *Dir) ConsumeCommand(id string) (bool, error) {
 		if os.IsExist(err) {
 			return false, nil // already consumed
 		}
-		return false, err
+		return false, fmt.Errorf("create consumed sidecar for %s: %w", id, err)
 	}
 	if _, err := f.Write([]byte(time.Now().UTC().Format(time.RFC3339) + "\n")); err != nil {
 		_ = f.Close()
 		_ = os.Remove(sidecar)
-		return false, err
+		return false, fmt.Errorf("write consumed sidecar for %s: %w", id, err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(sidecar)
-		return false, err
+		return false, fmt.Errorf("close consumed sidecar for %s: %w", id, err)
 	}
 	return true, nil
 }
@@ -674,7 +690,7 @@ func (d *Dir) ListCommands() ([]core.Command, error) {
 		if os.IsNotExist(err) {
 			return []core.Command{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read commands dir: %w", err)
 	}
 	var cmds []core.Command
 	for _, e := range entries {
@@ -706,7 +722,7 @@ func (d *Dir) GC(staleThreshold time.Duration, expiredOnly bool) (GCResult, erro
 	// Clean expired reservations
 	reservations, err := d.ListReservations()
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("gc list reservations: %w", err)
 	}
 	for _, r := range reservations {
 		if isExpired(r) {
@@ -721,14 +737,15 @@ func (d *Dir) GC(staleThreshold time.Duration, expiredOnly bool) (GCResult, erro
 	// Clean old consumed commands (older than 1 hour)
 	cmds, err := d.ListCommands()
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("gc list commands: %w", err)
 	}
 	for _, cmd := range cmds {
 		sidecar := filepath.Join(d.Root, "commands", cmd.ID+".consumed")
 		if info, err := os.Stat(sidecar); err == nil {
 			if time.Since(info.ModTime()) > time.Hour {
-				os.Remove(filepath.Join(d.Root, "commands", cmd.ID+".json"))
-				os.Remove(sidecar)
+				// best-effort: remove old command files
+				_ = os.Remove(filepath.Join(d.Root, "commands", cmd.ID+".json"))
+				_ = os.Remove(sidecar)
 				result.OldCommands++
 			}
 		}
@@ -738,7 +755,7 @@ func (d *Dir) GC(staleThreshold time.Duration, expiredOnly bool) (GCResult, erro
 	if !expiredOnly {
 		agents, err := d.ListAgents()
 		if err != nil {
-			return result, err
+			return result, fmt.Errorf("gc list agents: %w", err)
 		}
 		for _, name := range agents {
 			hb, err := d.ReadHeartbeat(name)
@@ -785,7 +802,7 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 
 	agents, err := d.ListAgents()
 	if err != nil {
-		return m, err
+		return m, fmt.Errorf("metrics list agents: %w", err)
 	}
 	m.Agents = len(agents)
 	for _, name := range agents {
@@ -814,7 +831,7 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 	// Count reservations
 	reservations, err := d.ListReservations()
 	if err != nil {
-		return m, err
+		return m, fmt.Errorf("metrics list reservations: %w", err)
 	}
 	m.Reservations = len(reservations)
 	now := time.Now()
@@ -830,7 +847,7 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 	// Count commands
 	cmds, err := d.ListCommands()
 	if err != nil {
-		return m, err
+		return m, fmt.Errorf("metrics list commands: %w", err)
 	}
 	m.Commands = len(cmds)
 	for _, cmd := range cmds {
@@ -846,7 +863,7 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 func (d *Dir) TouchWake(text string) error {
 	triggerPath := filepath.Join(d.Root, "wake", "trigger")
 	if err := atomicWrite(triggerPath, []byte(time.Now().UTC().Format(time.RFC3339)+"\n")); err != nil {
-		return err
+		return fmt.Errorf("write wake trigger: %w", err)
 	}
 	if text != "" {
 		msgPath := filepath.Join(d.Root, "wake", "last-message")
@@ -860,25 +877,28 @@ func atomicWrite(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".relay-tmp-*")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temp file for %s: %w", filepath.Base(path), err)
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return err
+		return fmt.Errorf("write temp file for %s: %w", filepath.Base(path), err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return err
+		return fmt.Errorf("close temp file for %s: %w", filepath.Base(path), err)
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename temp to %s: %w", filepath.Base(path), err)
+	}
+	return nil
 }
 
 func atomicWriteJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal JSON for %s: %w", filepath.Base(path), err)
 	}
 	data = append(data, '\n')
 	return atomicWrite(path, data)
@@ -903,6 +923,8 @@ func flockAppend(lockPath, dataPath string, data []byte) error {
 	}
 	defer f.Close()
 
-	_, err = f.Write(data)
-	return err
+	if _, err = f.Write(data); err != nil {
+		return fmt.Errorf("append to %s: %w", filepath.Base(dataPath), err)
+	}
+	return nil
 }

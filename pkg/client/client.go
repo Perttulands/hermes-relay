@@ -49,17 +49,17 @@ type Client struct {
 func NewClient(dir string) (*Client, error) {
 	root, err := resolveDir(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve relay dir: %w", err)
 	}
 
 	s, err := store.New(root)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init store: %w", err)
 	}
 
 	agent, err := resolveAgent()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve agent: %w", err)
 	}
 
 	return &Client{
@@ -153,7 +153,7 @@ func (c *Client) Watch() ([]Message, error) {
 
 	msgs, newOffset, err := c.store.WatchInbox(c.agent, offset)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("watch inbox: %w", err)
 	}
 
 	c.mu.Lock()
@@ -183,7 +183,7 @@ func (c *Client) ListCards() ([]core.AgentCard, error) {
 
 func resolveDir(dir string) (string, error) {
 	if dir == "" {
-		dir = os.Getenv("RELAY_DIR")
+		dir = strings.TrimSpace(os.Getenv("RELAY_DIR"))
 	}
 	if dir == "" {
 		home, err := os.UserHomeDir()

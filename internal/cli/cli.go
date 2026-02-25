@@ -59,7 +59,7 @@ func Run(args []string) int {
 	// Initialize store
 	dir := globalFlags.dir
 	if dir == "" {
-		dir = os.Getenv("RELAY_DIR")
+		dir = strings.TrimSpace(os.Getenv("RELAY_DIR"))
 	}
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -77,7 +77,7 @@ func Run(args []string) int {
 
 	agent := globalFlags.agent
 	if agent == "" {
-		agent = os.Getenv("RELAY_AGENT")
+		agent = strings.TrimSpace(os.Getenv("RELAY_AGENT"))
 	}
 	if agent == "" {
 		host, err := os.Hostname()
@@ -257,7 +257,7 @@ func (c *context) cmdHeartbeat(args []string) int {
 			if writeErr := c.store.WriteCard(card); writeErr != nil {
 				errorf("heartbeat: update card: %v", writeErr)
 			}
-		}
+		} // best-effort: card may not exist yet
 	} else if idle {
 		// Clear task and set idle on card.
 		card, err := c.store.ReadCard(c.agent)
@@ -267,7 +267,7 @@ func (c *context) cmdHeartbeat(args []string) int {
 			if writeErr := c.store.WriteCard(card); writeErr != nil {
 				errorf("heartbeat: update card: %v", writeErr)
 			}
-		}
+		} // best-effort: card may not exist yet
 	}
 	if !c.quiet {
 		fmt.Println("heartbeat updated")
@@ -309,11 +309,6 @@ func (c *context) cmdSend(args []string) int {
 	}
 
 	var tags []string
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--tag") {
-			// handled in flags
-		}
-	}
 	if t := flags["tag"]; t != "" {
 		tags = strings.Split(t, ",")
 	}
@@ -402,7 +397,7 @@ func (c *context) cmdSend(args []string) int {
 					fmt.Printf("wake: started %s\n", svcName)
 				}
 			} else {
-				// Fall back to default wake (Athena gateway)
+				// best-effort: systemctl start failed, fall back to default wake (Athena gateway)
 				c.doWake("")
 			}
 		} else {
@@ -515,6 +510,7 @@ func (c *context) cmdStatus(args []string) int {
 				Alive: err == nil && time.Since(hb) < staleThreshold,
 			}
 			// Prefer card data over meta for task/skills/status.
+			// best-effort: card or meta may not exist for all agents
 			if cardErr == nil {
 				status.Task = card.CurrentTask
 				status.Skills = card.Skills
@@ -545,6 +541,7 @@ func (c *context) cmdStatus(args []string) int {
 		task := ""
 		cardStatus := ""
 		skills := ""
+		// best-effort: card or meta may not exist for all agents
 		if cardErr == nil {
 			task = card.CurrentTask
 			cardStatus = card.Status
@@ -586,6 +583,7 @@ func (c *context) cmdStatus(args []string) int {
 		expires, err := time.Parse(time.RFC3339, r.ExpiresAt)
 		if err != nil {
 			errorf("status: invalid reservation expiry for %s: %v", r.Pattern, err)
+			// intentional: continue displaying reservation as expired
 		}
 		excl := "exclusive"
 		if !r.Exclusive {
@@ -658,6 +656,7 @@ func (c *context) cmdWatch(args []string) int {
 			}
 			ts, err := time.Parse(time.RFC3339, m.TS)
 			if err != nil {
+				// intentional: log warning and display message with "now" as fallback age
 				errorf("watch: invalid message timestamp for %s: %v", m.ID, err)
 				fmt.Printf("%s  %-16s %s\n", "now", m.From, m.Subject)
 			} else {
@@ -751,7 +750,8 @@ func (c *context) cmdReserve(args []string) int {
 
 	if err := c.store.Reserve(res); err != nil {
 		if force && strings.Contains(err.Error(), "conflict") {
-			// Force: remove existing and retry
+			// Force: remove existing and retry.
+			// intentional: release failure is non-fatal; we try direct file removal next
 			if releaseErr := c.store.Release(c.agent, repo, pattern); releaseErr != nil {
 				errorf("reserve (force): release existing reservation: %v", releaseErr)
 			}
@@ -946,7 +946,8 @@ func (c *context) doWakeMethod(text, method string) int {
 		}
 	}
 
-	// Auto: try gateway first, then file trigger
+	// Auto: try gateway first, then file trigger.
+	// best-effort: gateway failure is expected when not installed
 	if err := wakeGateway(text); err == nil {
 		if !c.quiet {
 			fmt.Println("wake: gateway")
@@ -1251,7 +1252,7 @@ func resolveBRBinary() string {
 		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
 			return candidate
 		}
-	}
+	} // best-effort: fall back to PATH lookup
 	return "br"
 }
 
@@ -1295,12 +1296,13 @@ func resolveWorkspaceDir() string {
 	home, err := os.UserHomeDir()
 	if err == nil {
 		candidate := filepath.Join(home, "athena", "workspace")
-		if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+		if st, statErr := os.Stat(candidate); statErr == nil && st.IsDir() {
 			return candidate
 		}
-		// Directory doesn't exist yet; return the path anyway as fallback.
+		// best-effort: directory doesn't exist yet; return the path anyway as fallback
 		return candidate
 	}
+	// best-effort: home dir unavailable, use relative path
 	return filepath.Join("athena", "workspace")
 }
 
@@ -1313,7 +1315,7 @@ func waitForSpawnResult(repo, beadID string) (string, error) {
 			return string(data), nil
 		}
 		if !os.IsNotExist(err) {
-			return "", err
+			return "", fmt.Errorf("read spawn result %s: %w", beadID, err)
 		}
 		time.Sleep(spawnPollInterval)
 	}
@@ -1442,25 +1444,8 @@ func parseDuration(s string) time.Duration {
 	if s == "" {
 		return 0
 	}
-	// Try Go duration first
 	if d, err := time.ParseDuration(s); err == nil {
 		return d
-	}
-	// Try simple suffixes
-	if strings.HasSuffix(s, "s") {
-		var n int
-		fmt.Sscanf(s, "%ds", &n)
-		return time.Duration(n) * time.Second
-	}
-	if strings.HasSuffix(s, "m") {
-		var n int
-		fmt.Sscanf(s, "%dm", &n)
-		return time.Duration(n) * time.Minute
-	}
-	if strings.HasSuffix(s, "h") {
-		var n int
-		fmt.Sscanf(s, "%dh", &n)
-		return time.Duration(n) * time.Hour
 	}
 	return 0
 }
