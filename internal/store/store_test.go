@@ -501,6 +501,7 @@ func TestPatternsOverlap(t *testing.T) {
 		a, b    string
 		overlap bool
 	}{
+		// Original cases
 		{"src/auth/**", "src/auth/login.go", true},
 		{"src/**", "src/auth/login.go", true},
 		{"src/a/*", "src/b/*", false},
@@ -509,6 +510,32 @@ func TestPatternsOverlap(t *testing.T) {
 		{"src/auth/**", "src/auth/**", true}, // exact match
 		{"src/auth/**", "src/api/**", false}, // different subtrees
 		{"*.go", "*.go", true},               // same pattern
+
+		// ** as second arg (line 578)
+		{"anything", "**", true},
+
+		// bNorm prefix of aNorm (line 587)
+		{"src/auth/login.go", "src/auth/**", true},
+
+		// Original pattern starts with normalized+/ (line 590)
+		{"lib/**", "lib/util.go", true},
+		{"lib/util.go", "lib/**", true},
+
+		// Same directory, wildcard extension overlap (lines 597-609)
+		{"src/*.go", "src/*.go", true},
+		{"src/*.go", "src/main.go", true},
+		{"src/*.go", "src/*.rs", false},
+		{"src/*", "src/main.go", false},
+
+		// ** inside pattern (not suffix), concrete other (lines 613-625)
+		{"src/**/test.go", "src/pkg/test.go", true},
+		{"lib/**/test.go", "src/pkg/test.go", false},
+		{"src/pkg/test.go", "src/**/test.go", true},
+		{"src/pkg/test.go", "lib/**/test.go", false},
+
+		// Disjoint concrete files
+		{"src/a.go", "src/b.go", false},
+		{"lib/x.go", "src/y.go", false},
 	}
 	for _, tc := range cases {
 		got := patternsOverlap(tc.a, tc.b)
