@@ -837,6 +837,33 @@ func TestRegisterJSONOutputIsCard(t *testing.T) {
 	}
 }
 
+// --- extractSpawnBeadID tests ---
+
+func TestExtractSpawnBeadID(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"primary regex match", "✓ Created issue: athena-xyz", "athena-xyz"},
+		{"primary with extra whitespace", "Created issue:   pol-3fa  ", "pol-3fa"},
+		{"primary with surrounding text", "some noise Created issue: br-42 more noise", "br-42"},
+		{"fallback regex match", "something athena-xyz something", "athena-xyz"},
+		{"fallback with dashes", "got pol-2r-extra here", "pol-2r-extra"},
+		{"no match empty string", "", ""},
+		{"no match no bead-like ID", "just plain text with no ids", ""},
+		{"multiline primary", "line1\n✓ Created issue: athena-abc\nline3", "athena-abc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractSpawnBeadID(tc.input)
+			if got != tc.expect {
+				t.Errorf("extractSpawnBeadID(%q) = %q, want %q", tc.input, got, tc.expect)
+			}
+		})
+	}
+}
+
 // Integration test: full multi-agent scenario
 func TestFullScenario(t *testing.T) {
 	_, cleanup := setup(t)
