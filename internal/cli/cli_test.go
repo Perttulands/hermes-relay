@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -834,6 +835,188 @@ func TestRegisterJSONOutputIsCard(t *testing.T) {
 	code := run("register", "json-card-agent", "--skills", "go", "--json")
 	if code != 0 {
 		t.Fatalf("register --json failed with code %d", code)
+	}
+}
+
+// --- Output capture helpers ---
+
+// captureRun runs a CLI command and returns (exit code, stdout).
+func captureRun(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	full := append([]string{"relay"}, args...)
+	code := Run(full)
+
+	w.Close()
+	os.Stdout = old
+
+	data, err2 := io.ReadAll(r)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+	return code, string(data)
+}
+
+// --- CLI output assertion tests (pol-20co) ---
+
+func TestSendOutputContainsDelivered(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "target")
+
+	code, out := captureRun(t, "send", "target", "hello world")
+	if code != 0 {
+		t.Fatalf("send failed with code %d", code)
+	}
+	if !strings.Contains(strings.ToLower(out), "deliver") && !strings.Contains(strings.ToLower(out), "sent") && !strings.Contains(out, "→") {
+		t.Errorf("send output should indicate delivery, got: %q", out)
+	}
+}
+
+func TestSendJSONOutputIsValidJSON(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "target")
+
+	code, out := captureRun(t, "send", "target", "json test", "--json")
+	if code != 0 {
+		t.Fatalf("send --json failed with code %d", code)
+	}
+	out = strings.TrimSpace(out)
+	if !json.Valid([]byte(out)) {
+		t.Errorf("send --json output is not valid JSON: %q", out)
+	}
+}
+
+func TestReadOutputContainsMessageBody(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "sender")
+	run("send", "test-agent", "unique-test-body-42", "--agent", "sender")
+
+	code, out := captureRun(t, "read")
+	if code != 0 {
+		t.Fatalf("read failed with code %d", code)
+	}
+	if !strings.Contains(out, "unique-test-body-42") {
+		t.Errorf("read output should contain message body, got: %q", out)
+	}
+}
+
+func TestReadJSONOutputContainsMessages(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+	run("register", "sender")
+	run("send", "test-agent", "json-body-check", "--agent", "sender")
+
+	code, out := captureRun(t, "read", "--json")
+	if code != 0 {
+		t.Fatalf("read --json failed with code %d", code)
+	}
+	out = strings.TrimSpace(out)
+	if !strings.Contains(out, "json-body-check") {
+		t.Errorf("read --json output should contain message body, got: %q", out)
+	}
+	var msgs []json.RawMessage
+	if err := json.Unmarshal([]byte(out), &msgs); err != nil {
+		t.Errorf("read --json should produce JSON array: %v\noutput: %q", err, out)
+	}
+}
+
+func TestReadEmptyInboxOutput(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "test-agent")
+
+	code, out := captureRun(t, "read")
+	if code != 0 {
+		t.Fatalf("read empty inbox failed with code %d", code)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "no messages") && !strings.Contains(lower, "empty") && strings.TrimSpace(out) != "" {
+		t.Logf("empty inbox output: %q (acceptable)", out)
+	}
+}
+
+func TestMetricsOutputContainsCounts(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "agent-a")
+	run("register", "agent-b")
+	run("send", "agent-b", "hello", "--agent", "agent-a")
+
+	code, out := captureRun(t, "metrics")
+	if code != 0 {
+		t.Fatalf("metrics failed with code %d", code)
+	}
+	lower := strings.ToLower(out)
+	if !strings.Contains(lower, "agent") {
+		t.Errorf("metrics output should mention agents, got: %q", out)
+	}
+	if !strings.Contains(lower, "message") {
+		t.Errorf("metrics output should mention messages, got: %q", out)
+	}
+}
+
+func TestMetricsJSONOutputIsValid(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "agent-a")
+
+	code, out := captureRun(t, "metrics", "--json")
+	if code != 0 {
+		t.Fatalf("metrics --json failed with code %d", code)
+	}
+	out = strings.TrimSpace(out)
+	if !json.Valid([]byte(out)) {
+		t.Errorf("metrics --json output is not valid JSON: %q", out)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("failed to parse metrics JSON: %v", err)
+	}
+	for _, key := range []string{"agents", "total_messages", "reservations", "commands"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("metrics JSON missing key %q", key)
+		}
+	}
+}
+
+func TestStatusOutputContainsAgentNames(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+	run("register", "alpha-agent", "--task", "alpha work")
+	run("register", "beta-agent", "--task", "beta work")
+
+	code, out := captureRun(t, "status")
+	if code != 0 {
+		t.Fatalf("status failed with code %d", code)
+	}
+	if !strings.Contains(out, "alpha-agent") {
+		t.Errorf("status output should contain 'alpha-agent', got: %q", out)
+	}
+	if !strings.Contains(out, "beta-agent") {
+		t.Errorf("status output should contain 'beta-agent', got: %q", out)
+	}
+}
+
+func TestVersionOutputContainsVersion(t *testing.T) {
+	code, out := captureRun(t, "version")
+	if code != 0 {
+		t.Fatalf("version failed with code %d", code)
+	}
+	if !strings.Contains(out, "relay") {
+		t.Errorf("version output should contain 'relay', got: %q", out)
 	}
 }
 
