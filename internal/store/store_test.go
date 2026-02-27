@@ -747,6 +747,109 @@ func TestReservationHash(t *testing.T) {
 	}
 }
 
+// --- Metrics tests ---
+
+func TestMetricsEmptyStore(t *testing.T) {
+	d := tempDir(t)
+	m, err := d.Metrics(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Agents != 0 || m.AliveAgents != 0 || m.StaleAgents != 0 {
+		t.Errorf("empty store agents: got %+v", m)
+	}
+	if m.TotalMessages != 0 {
+		t.Errorf("empty store messages: got %d", m.TotalMessages)
+	}
+	if m.Reservations != 0 || m.ActiveReservations != 0 || m.ExpiredReservations != 0 {
+		t.Errorf("empty store reservations: got %+v", m)
+	}
+	if m.Commands != 0 || m.PendingCommands != 0 {
+		t.Errorf("empty store commands: got %+v", m)
+	}
+}
+
+func TestMetricsWithData(t *testing.T) {
+	d := tempDir(t)
+
+	// Register 3 agents
+	for _, name := range []string{"alive-1", "alive-2", "stale-1"} {
+		d.Register(core.AgentMeta{Name: name, RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	}
+
+	// Backdate stale-1's heartbeat so it appears stale (>5min)
+	hbPath := filepath.Join(d.AgentDir("stale-1"), "heartbeat")
+	old := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	os.WriteFile(hbPath, []byte(old+"\n"), 0644)
+
+	// Send 3 messages to alive-1
+	for i := 0; i < 3; i++ {
+		d.Send(core.Message{
+			ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+			From: "alive-2", To: "alive-1", Body: fmt.Sprintf("msg%d", i),
+		})
+	}
+
+	// Create 1 active and 1 expired reservation
+	d.Reserve(core.Reservation{
+		ID: core.NewULID(), Agent: "alive-1", Pattern: "a.go", Repo: "/r",
+		Exclusive: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	d.Reserve(core.Reservation{
+		ID: core.NewULID(), Agent: "alive-2", Pattern: "b.go", Repo: "/r",
+		Exclusive: true,
+		CreatedAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+	})
+
+	// Create 2 commands: 1 pending, 1 consumed
+	cmd1 := core.Command{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "alive-1", TargetSession: "t", Command: "/test", Status: "pending",
+	}
+	d.CreateCommand(cmd1)
+	cmd2 := core.Command{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "alive-2", TargetSession: "t", Command: "/verify", Status: "pending",
+	}
+	d.CreateCommand(cmd2)
+	d.ConsumeCommand(cmd2.ID)
+
+	m, err := d.Metrics(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Agents != 3 {
+		t.Errorf("agents: want 3, got %d", m.Agents)
+	}
+	if m.AliveAgents != 2 {
+		t.Errorf("alive: want 2, got %d", m.AliveAgents)
+	}
+	if m.StaleAgents != 1 {
+		t.Errorf("stale: want 1, got %d", m.StaleAgents)
+	}
+	if m.TotalMessages != 3 {
+		t.Errorf("messages: want 3, got %d", m.TotalMessages)
+	}
+	if m.Reservations != 2 {
+		t.Errorf("reservations: want 2, got %d", m.Reservations)
+	}
+	if m.ActiveReservations != 1 {
+		t.Errorf("active reservations: want 1, got %d", m.ActiveReservations)
+	}
+	if m.ExpiredReservations != 1 {
+		t.Errorf("expired reservations: want 1, got %d", m.ExpiredReservations)
+	}
+	if m.Commands != 2 {
+		t.Errorf("commands: want 2, got %d", m.Commands)
+	}
+	if m.PendingCommands != 1 {
+		t.Errorf("pending commands: want 1, got %d", m.PendingCommands)
+	}
+}
+
 // BenchmarkSend benchmarks the flock-guarded append.
 func BenchmarkSend(b *testing.B) {
 	root := b.TempDir()
