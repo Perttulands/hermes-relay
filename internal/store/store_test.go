@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1199,5 +1200,1171 @@ func TestReadHeartbeatTimeFallsBackToFile(t *testing.T) {
 	}
 	if time.Since(hbt) > 5*time.Second {
 		t.Errorf("expected recent heartbeat time, got %v ago", time.Since(hbt))
+	}
+}
+
+// --- Targeted coverage tests ---
+
+func TestReadHeartbeatNonexistent(t *testing.T) {
+	d := tempDir(t)
+	_, err := d.ReadHeartbeat("no-such-agent")
+	if err == nil {
+		t.Error("expected error for nonexistent heartbeat")
+	}
+}
+
+func TestReadHeartbeatMalformedTimestamp(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	// Write garbage to heartbeat file
+	hbPath := filepath.Join(d.AgentDir("agent"), "heartbeat")
+	os.WriteFile(hbPath, []byte("not-a-timestamp\n"), 0644)
+
+	_, err := d.ReadHeartbeat("agent")
+	if err == nil {
+		t.Error("expected error for malformed heartbeat")
+	}
+}
+
+func TestReadMetaNonexistent(t *testing.T) {
+	d := tempDir(t)
+	_, err := d.ReadMeta("no-such-agent")
+	if err == nil {
+		t.Error("expected error for nonexistent meta")
+	}
+}
+
+func TestReadMetaMalformedJSON(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	metaPath := filepath.Join(d.AgentDir("agent"), "meta.json")
+	os.WriteFile(metaPath, []byte("{not valid json"), 0644)
+
+	_, err := d.ReadMeta("agent")
+	if err == nil {
+		t.Error("expected error for malformed meta")
+	}
+}
+
+func TestReadCardMalformedJSON(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	cardPath := filepath.Join(d.AgentDir("agent"), "card.json")
+	os.WriteFile(cardPath, []byte("{broken"), 0644)
+
+	_, err := d.ReadCard("agent")
+	if err == nil {
+		t.Error("expected error for malformed card JSON")
+	}
+}
+
+func TestListAgentsEmptyDir(t *testing.T) {
+	d := tempDir(t)
+	agents, err := d.ListAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents in empty store, got %d", len(agents))
+	}
+}
+
+func TestListAgentsSkipsFiles(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "real-agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	// Create a file (not dir) in agents/
+	os.WriteFile(filepath.Join(d.Root, "agents", "not-a-dir"), []byte("x"), 0644)
+
+	agents, err := d.ListAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Errorf("expected 1 agent (file skipped), got %d", len(agents))
+	}
+}
+
+func TestSendToMissingRecipientDir(t *testing.T) {
+	d := tempDir(t)
+	msg := core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "nonexistent", Body: "test", Priority: "normal",
+	}
+	err := d.Send(msg)
+	if err == nil {
+		t.Error("expected error for missing recipient")
+	}
+	if !strings.Contains(err.Error(), "not registered") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestUpdateTaskNonexistentAgent(t *testing.T) {
+	d := tempDir(t)
+	err := d.UpdateTask("no-agent", "task")
+	if err == nil {
+		t.Error("expected error for nonexistent agent")
+	}
+}
+
+func TestConsumeCommandNonexistent(t *testing.T) {
+	d := tempDir(t)
+	// Consume a command that was never created — should still work (create sidecar)
+	ok, err := d.ConsumeCommand("nonexistent-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("expected first consume to succeed")
+	}
+	// Second consume should fail
+	ok, err = d.ConsumeCommand("nonexistent-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("expected second consume to return false")
+	}
+}
+
+func TestReserveDuplicateNoExistingReadable(t *testing.T) {
+	d := tempDir(t)
+	res := core.Reservation{
+		ID: core.NewULID(), Agent: "agent", Pattern: "file.go", Repo: "/r",
+		Exclusive: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}
+	if err := d.Reserve(res); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the reservation file so readReservation fails
+	hash := ReservationHash("/r", "file.go")
+	path := filepath.Join(d.Root, "reservations", hash+".json")
+	os.WriteFile(path, []byte("{broken json"), 0644)
+
+	// Try to reserve again — should get conflict with fallback error message
+	err := d.Reserve(res)
+	if err == nil {
+		t.Error("expected conflict error")
+	}
+	if !strings.Contains(err.Error(), "conflict") {
+		t.Errorf("expected conflict error, got: %v", err)
+	}
+}
+
+func TestReleaseNonexistentReservation(t *testing.T) {
+	d := tempDir(t)
+	err := d.Release("agent", "/repo", "no-such-pattern")
+	if err == nil {
+		t.Error("expected error for nonexistent reservation")
+	}
+}
+
+func TestListReservationsSkipsNonJSON(t *testing.T) {
+	d := tempDir(t)
+	// Create a non-JSON file in reservations/
+	os.WriteFile(filepath.Join(d.Root, "reservations", "readme.txt"), []byte("ignore"), 0644)
+	// Create a broken JSON file
+	os.WriteFile(filepath.Join(d.Root, "reservations", "broken.json"), []byte("{bad"), 0644)
+
+	list, err := d.ListReservations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should skip both: non-json and broken json
+	if len(list) != 0 {
+		t.Errorf("expected 0 valid reservations, got %d", len(list))
+	}
+}
+
+func TestListCommandsSkipsNonJSON(t *testing.T) {
+	d := tempDir(t)
+	// Create non-json files
+	os.WriteFile(filepath.Join(d.Root, "commands", "readme.txt"), []byte("ignore"), 0644)
+	os.WriteFile(filepath.Join(d.Root, "commands", "broken.json"), []byte("{bad"), 0644)
+
+	cmds, err := d.ListCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmds) != 0 {
+		t.Errorf("expected 0 valid commands, got %d", len(cmds))
+	}
+}
+
+func TestIsExpiredMalformedTimestamp(t *testing.T) {
+	r := core.Reservation{ExpiresAt: "not-a-date"}
+	// isExpired should return false for unparseable timestamps
+	if isExpired(r) {
+		t.Error("expected false for malformed expiry")
+	}
+}
+
+func TestIsExpiredFutureReservation(t *testing.T) {
+	r := core.Reservation{
+		ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	if isExpired(r) {
+		t.Error("expected false for future expiry")
+	}
+}
+
+func TestIsExpiredPastReservation(t *testing.T) {
+	r := core.Reservation{
+		ExpiresAt: time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	if !isExpired(r) {
+		t.Error("expected true for past expiry")
+	}
+}
+
+func TestWatchInboxUnregisteredAgent(t *testing.T) {
+	d := tempDir(t)
+	_, _, err := d.WatchInbox("nonexistent", 0)
+	if err == nil {
+		t.Error("expected error for unregistered agent")
+	}
+}
+
+func TestReadHeartbeatTimeCardWithBadLastSeen(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Write card with bad LastSeen — should fall back to heartbeat file
+	card := core.AgentCard{
+		Name:         "agent",
+		LastSeen:     "not-a-date",
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	d.writeCardRaw(card)
+
+	hbt, err := d.ReadHeartbeatTime("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(hbt) > 5*time.Second {
+		t.Errorf("expected recent time, got %v ago", time.Since(hbt))
+	}
+}
+
+func TestReadHeartbeatTimeCardEmptyLastSeen(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Write card with empty LastSeen
+	card := core.AgentCard{
+		Name:         "agent",
+		RegisteredAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	d.writeCardRaw(card)
+
+	hbt, err := d.ReadHeartbeatTime("agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(hbt) > 5*time.Second {
+		t.Errorf("expected recent time from heartbeat file, got %v ago", time.Since(hbt))
+	}
+}
+
+func TestReadInboxEmptyFile(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Create empty inbox
+	inbox := filepath.Join(d.AgentDir("agent"), "inbox.jsonl")
+	os.WriteFile(inbox, []byte(""), 0644)
+
+	msgs, err := d.ReadInbox("agent", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(msgs))
+	}
+}
+
+func TestReadInboxNonexistentFile(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// No inbox file — should return empty slice, not error
+	msgs, err := d.ReadInbox("agent", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0, got %d", len(msgs))
+	}
+}
+
+func TestGCWithMixedCommands(t *testing.T) {
+	d := tempDir(t)
+
+	// Create a pending command (not consumed) — should not be cleaned
+	cmd1 := core.Command{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "agent", TargetSession: "t", Command: "/test", Status: "pending",
+	}
+	d.CreateCommand(cmd1)
+
+	// Create a recently consumed command — should not be cleaned
+	cmd2 := core.Command{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "agent", TargetSession: "t", Command: "/test2", Status: "pending",
+	}
+	d.CreateCommand(cmd2)
+	d.ConsumeCommand(cmd2.ID)
+
+	result, err := d.GC(30*time.Minute, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recent consumed should not be cleaned
+	if result.OldCommands != 0 {
+		t.Errorf("expected 0 old commands cleaned, got %d", result.OldCommands)
+	}
+}
+
+func TestListAgentsMissingDir(t *testing.T) {
+	// Create a Dir with a root that exists but where agents/ has been removed
+	root := t.TempDir()
+	d, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Remove the agents directory
+	os.RemoveAll(filepath.Join(root, "agents"))
+
+	agents, err := d.ListAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 0 {
+		t.Errorf("expected 0 agents, got %d", len(agents))
+	}
+}
+
+func TestReadMessagesSinceOffsetBeyondFile(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Write a message
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "agent", Body: "msg",
+	})
+
+	inbox := filepath.Join(d.AgentDir("agent"), "inbox.jsonl")
+	// Read with offset way past file end
+	msgs, newOffset, err := readMessagesSince(inbox, 999999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(msgs))
+	}
+	// Offset should be clamped to file size
+	info, _ := os.Stat(inbox)
+	if newOffset < info.Size() {
+		t.Errorf("expected offset >= file size, got %d", newOffset)
+	}
+}
+
+func TestReadMessagesSincePartialLine(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Write a complete message plus a partial trailing line
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "agent", Body: "complete",
+	})
+	inbox := filepath.Join(d.AgentDir("agent"), "inbox.jsonl")
+	f, _ := os.OpenFile(inbox, os.O_WRONLY|os.O_APPEND, 0644)
+	f.Write([]byte(`{"id":"partial","body":"incomplete`))
+	f.Close()
+
+	msgs, _, err := readMessagesSince(inbox, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 complete message, got %d", len(msgs))
+	}
+}
+
+func TestReadMessagesSinceMalformedJSON(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	inbox := filepath.Join(d.AgentDir("agent"), "inbox.jsonl")
+	// Write a broken JSON line followed by a valid one
+	f, _ := os.OpenFile(inbox, os.O_WRONLY|os.O_CREATE, 0644)
+	f.Write([]byte("{broken json}\n"))
+	good := core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "s", To: "agent", Body: "ok",
+	}
+	line, _ := json.Marshal(good)
+	f.Write(line)
+	f.Write([]byte("\n"))
+	f.Close()
+
+	msgs, _, err := readMessagesSince(inbox, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 valid message (malformed skipped), got %d", len(msgs))
+	}
+}
+
+func TestReadInboxUnreadWithExistingCursor(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Send two messages, mark read, then send one more
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "agent", Body: "old1",
+	})
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "agent", Body: "old2",
+	})
+
+	// Mark read sets cursor
+	d.ReadInbox("agent", ReadOpts{MarkRead: true})
+
+	// Send new message
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "agent", Body: "new1",
+	})
+
+	// Read with Unread=true — should only get new message
+	msgs, err := d.ReadInbox("agent", ReadOpts{Unread: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 unread message, got %d", len(msgs))
+	}
+	if len(msgs) > 0 && msgs[0].Body != "new1" {
+		t.Errorf("expected body=new1, got %s", msgs[0].Body)
+	}
+}
+
+func TestMatchFilterSince(t *testing.T) {
+	opts := ReadOpts{Since: time.Now().Add(1 * time.Hour)}
+	msg := core.Message{
+		TS: time.Now().UTC().Format(time.RFC3339),
+	}
+	// Message timestamp is before Since — should not match
+	if opts.match(msg) {
+		t.Error("expected no match for message before Since")
+	}
+
+	// Message with bad timestamp — should not match
+	msgBad := core.Message{TS: "not-a-date"}
+	if opts.match(msgBad) {
+		t.Error("expected no match for bad timestamp")
+	}
+}
+
+func TestListReservationsMissingDir(t *testing.T) {
+	root := t.TempDir()
+	d, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.RemoveAll(filepath.Join(root, "reservations"))
+
+	list, err := d.ListReservations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected 0, got %d", len(list))
+	}
+}
+
+func TestListCommandsMissingDir(t *testing.T) {
+	root := t.TempDir()
+	d, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.RemoveAll(filepath.Join(root, "commands"))
+
+	cmds, err := d.ListCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmds) != 0 {
+		t.Errorf("expected 0, got %d", len(cmds))
+	}
+}
+
+func TestMatchAllFilters(t *testing.T) {
+	now := time.Now().UTC()
+	msg := core.Message{
+		From:   "sender",
+		Thread: "t1",
+		TS:     now.Format(time.RFC3339),
+		Type:   core.TypeAlert,
+	}
+
+	// Match all — all filters match
+	opts := ReadOpts{
+		From:   "sender",
+		Thread: "t1",
+		Since:  now.Add(-1 * time.Hour),
+		Type:   core.TypeAlert,
+	}
+	if !opts.match(msg) {
+		t.Error("expected match")
+	}
+
+	// Fail on From
+	opts2 := ReadOpts{From: "other"}
+	if opts2.match(msg) {
+		t.Error("expected no match on From")
+	}
+
+	// Fail on Thread
+	opts3 := ReadOpts{Thread: "other-thread"}
+	if opts3.match(msg) {
+		t.Error("expected no match on Thread")
+	}
+
+	// Fail on Type
+	opts4 := ReadOpts{Type: core.TypeChat}
+	if opts4.match(msg) {
+		t.Error("expected no match on Type")
+	}
+}
+
+func TestTouchWakeEmptyAndNonempty(t *testing.T) {
+	d := tempDir(t)
+
+	// Without text
+	if err := d.TouchWake(""); err != nil {
+		t.Fatal(err)
+	}
+	trigger := filepath.Join(d.Root, "wake", "trigger")
+	if _, err := os.Stat(trigger); err != nil {
+		t.Error("trigger not created")
+	}
+
+	// With text
+	if err := d.TouchWake("hello"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(d.Root, "wake", "last-message"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello\n" {
+		t.Errorf("unexpected message: %q", data)
+	}
+}
+
+func TestNewWithExistingDirs(t *testing.T) {
+	// New should succeed even if dirs already exist
+	root := t.TempDir()
+	d1, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := New(root) // second call
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1.Root != d2.Root {
+		t.Error("expected same root")
+	}
+}
+
+func TestWatchInboxWithExistingMessages(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	d.Register(core.AgentMeta{Name: "bob", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Send a message before watching (pre-existing)
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "bob", To: "alice", Body: "existing",
+	})
+
+	type result struct {
+		msgs []core.Message
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		// Watch with offset 0 — should skip existing and wait for new
+		msgs, _, err := d.WatchInbox("alice", 0)
+		ch <- result{msgs: msgs, err: err}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	// Send new message that watcher should pick up
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "bob", To: "alice", Body: "new-msg",
+	})
+
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("watch error: %v", got.err)
+		}
+		if len(got.msgs) != 1 {
+			t.Fatalf("expected 1 new message, got %d", len(got.msgs))
+		}
+		if got.msgs[0].Body != "new-msg" {
+			t.Errorf("expected body=new-msg, got %s", got.msgs[0].Body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watch timed out")
+	}
+}
+
+func TestWatchInboxWithNonZeroOffset(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+	d.Register(core.AgentMeta{Name: "bob", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Send initial message
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "bob", To: "alice", Body: "first",
+	})
+
+	inbox := filepath.Join(d.AgentDir("alice"), "inbox.jsonl")
+	info, _ := os.Stat(inbox)
+	offset := info.Size()
+
+	type result struct {
+		msgs []core.Message
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		msgs, _, err := d.WatchInbox("alice", offset)
+		ch <- result{msgs: msgs, err: err}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "bob", To: "alice", Body: "second",
+	})
+
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("watch error: %v", got.err)
+		}
+		if len(got.msgs) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(got.msgs))
+		}
+		if got.msgs[0].Body != "second" {
+			t.Errorf("expected body=second, got %s", got.msgs[0].Body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watch timed out")
+	}
+}
+
+func TestGCAgentWithNoHeartbeat(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Remove the heartbeat file — GC should skip (continue) this agent
+	os.Remove(filepath.Join(d.AgentDir("agent"), "heartbeat"))
+
+	result, err := d.GC(1*time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Agent should be skipped, not counted as stale
+	if result.StaleAgents != 0 {
+		t.Errorf("expected 0 stale agents (no heartbeat), got %d", result.StaleAgents)
+	}
+}
+
+func TestGCAgentRecentHeartbeat(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "active", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Agent has a fresh heartbeat — should not be marked stale
+	result, err := d.GC(30*time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StaleAgents != 0 {
+		t.Errorf("expected 0 stale agents (fresh heartbeat), got %d", result.StaleAgents)
+	}
+}
+
+func TestReserveAndRelistConflict(t *testing.T) {
+	d := tempDir(t)
+	// Reserve twice with same params — second should fail with conflict message containing agent name
+	res := core.Reservation{
+		ID: core.NewULID(), Agent: "agent-1", Pattern: "file.go", Repo: "/r",
+		Exclusive: true, Reason: "testing",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}
+	if err := d.Reserve(res); err != nil {
+		t.Fatal(err)
+	}
+
+	res.ID = core.NewULID()
+	err := d.Reserve(res)
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+	// Should include agent name in conflict message
+	if !strings.Contains(err.Error(), "agent-1") {
+		t.Errorf("conflict error should mention agent, got: %v", err)
+	}
+}
+
+func TestMetricsStaleAgentNoHeartbeat(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "ghost", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Remove heartbeat — ReadHeartbeatTime should fail, agent counts as stale
+	os.Remove(filepath.Join(d.AgentDir("ghost"), "heartbeat"))
+
+	m, err := d.Metrics(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Agents != 1 {
+		t.Errorf("expected 1 agent, got %d", m.Agents)
+	}
+	if m.StaleAgents != 1 {
+		t.Errorf("expected 1 stale (no heartbeat), got %d", m.StaleAgents)
+	}
+}
+
+func TestNewFailsOnInvalidRoot(t *testing.T) {
+	// Use a file as root — MkdirAll should fail
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "not-a-dir")
+	os.WriteFile(filePath, []byte("x"), 0644)
+
+	_, err := New(filePath)
+	if err == nil {
+		t.Error("expected error when root is a file")
+	}
+}
+
+func TestConsumeCommandMissingCommandsDir(t *testing.T) {
+	d := tempDir(t)
+	os.RemoveAll(filepath.Join(d.Root, "commands"))
+
+	_, err := d.ConsumeCommand("test-id")
+	if err == nil {
+		t.Error("expected error when commands dir is missing")
+	}
+}
+
+func TestSendSubjectTruncation(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "target", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	longBody := strings.Repeat("x", 100)
+	msg := core.Message{
+		From: "sender", To: "target", Body: longBody,
+	}
+	if err := d.Send(msg); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := d.ReadInbox("target", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1, got %d", len(msgs))
+	}
+	if len(msgs[0].Subject) > 80 {
+		t.Errorf("subject should be truncated to 80, got %d", len(msgs[0].Subject))
+	}
+}
+
+// --- Tests that matter: real agent failure modes ---
+
+// TestSendReadRoundtripPreservesAllFields verifies every Message field survives
+// the send→inbox→read roundtrip. Agents depend on all fields being intact.
+func TestSendReadRoundtripPreservesAllFields(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	ts := time.Now().UTC().Format(time.RFC3339)
+	sent := core.Message{
+		ID:       core.NewULID(),
+		TS:       ts,
+		From:     "bob",
+		To:       "alice",
+		Subject:  "task complete",
+		Body:     "All tests pass, auth refactor merged.",
+		Thread:   "br-42",
+		Priority: "high",
+		ReplyTo:  "prev-msg-id",
+		Tags:     []string{"auth", "release"},
+		Type:     core.TypeTaskResult,
+		Payload:  json.RawMessage(`{"exit_code":0,"files_changed":3}`),
+	}
+	if err := d.Send(sent); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := d.ReadInbox("alice", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	got := msgs[0]
+
+	if got.ID != sent.ID {
+		t.Errorf("ID: got %q, want %q", got.ID, sent.ID)
+	}
+	if got.TS != sent.TS {
+		t.Errorf("TS: got %q, want %q", got.TS, sent.TS)
+	}
+	if got.From != sent.From {
+		t.Errorf("From: got %q, want %q", got.From, sent.From)
+	}
+	if got.To != sent.To {
+		t.Errorf("To: got %q, want %q", got.To, sent.To)
+	}
+	if got.Subject != sent.Subject {
+		t.Errorf("Subject: got %q, want %q", got.Subject, sent.Subject)
+	}
+	if got.Body != sent.Body {
+		t.Errorf("Body: got %q, want %q", got.Body, sent.Body)
+	}
+	if got.Thread != sent.Thread {
+		t.Errorf("Thread: got %q, want %q", got.Thread, sent.Thread)
+	}
+	if got.Priority != sent.Priority {
+		t.Errorf("Priority: got %q, want %q", got.Priority, sent.Priority)
+	}
+	if got.ReplyTo != sent.ReplyTo {
+		t.Errorf("ReplyTo: got %q, want %q", got.ReplyTo, sent.ReplyTo)
+	}
+	if len(got.Tags) != 2 || got.Tags[0] != "auth" || got.Tags[1] != "release" {
+		t.Errorf("Tags: got %v, want [auth release]", got.Tags)
+	}
+	if got.Type != sent.Type {
+		t.Errorf("Type: got %q, want %q", got.Type, sent.Type)
+	}
+	if string(got.Payload) != string(sent.Payload) {
+		t.Errorf("Payload: got %s, want %s", got.Payload, sent.Payload)
+	}
+}
+
+// TestConcurrentReserveSamePattern exercises the O_CREAT|O_EXCL race.
+// When two agents try to reserve the same pattern simultaneously,
+// exactly one must win and the other must get a conflict error.
+func TestConcurrentReserveSamePattern(t *testing.T) {
+	d := tempDir(t)
+
+	var wg sync.WaitGroup
+	results := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			res := core.Reservation{
+				ID:        core.NewULID(),
+				Agent:     fmt.Sprintf("agent-%d", n),
+				Pattern:   "contested.go",
+				Repo:      "/repo",
+				Exclusive: true,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			}
+			results <- d.Reserve(res)
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	wins := 0
+	conflicts := 0
+	for err := range results {
+		if err == nil {
+			wins++
+		} else if strings.Contains(err.Error(), "conflict") {
+			conflicts++
+		} else {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if wins != 1 {
+		t.Errorf("exactly 1 goroutine should win the reservation, got %d", wins)
+	}
+	if conflicts != 9 {
+		t.Errorf("expected 9 conflicts, got %d", conflicts)
+	}
+}
+
+// TestInboxCorruptionMidFileRecovery verifies that a corrupt JSON line
+// between valid messages doesn't lose the valid ones. This simulates
+// disk corruption or a partial write from a killed process.
+func TestInboxCorruptionMidFileRecovery(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Send first valid message
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "bob", To: "alice", Body: "first-valid",
+	})
+
+	// Inject corrupt line directly into inbox
+	inbox := filepath.Join(d.AgentDir("alice"), "inbox.jsonl")
+	f, err := os.OpenFile(inbox, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write([]byte("{\"id\":\"corrupt\",\"body\":garbled nonsense}\n"))
+	f.Close()
+
+	// Send second valid message
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "bob", To: "alice", Body: "second-valid",
+	})
+
+	msgs, err := d.ReadInbox("alice", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 valid messages (corrupt line skipped), got %d", len(msgs))
+	}
+	if msgs[0].Body != "first-valid" {
+		t.Errorf("first message body: got %q, want %q", msgs[0].Body, "first-valid")
+	}
+	if msgs[1].Body != "second-valid" {
+		t.Errorf("second message body: got %q, want %q", msgs[1].Body, "second-valid")
+	}
+}
+
+// TestGCPreservesActiveReservations verifies GC only removes expired
+// reservations and does not touch active ones — a critical safety property.
+func TestGCPreservesActiveReservations(t *testing.T) {
+	d := tempDir(t)
+
+	active := core.Reservation{
+		ID: core.NewULID(), Agent: "agent-1", Pattern: "active.go", Repo: "/r",
+		Exclusive: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}
+	expired := core.Reservation{
+		ID: core.NewULID(), Agent: "agent-2", Pattern: "old.go", Repo: "/r",
+		Exclusive: true,
+		CreatedAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	d.Reserve(active)
+	d.Reserve(expired)
+
+	result, err := d.GC(30*time.Minute, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExpiredReservations != 1 {
+		t.Errorf("expected 1 expired removed, got %d", result.ExpiredReservations)
+	}
+
+	remaining, _ := d.ListReservations()
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 remaining reservation, got %d", len(remaining))
+	}
+	if remaining[0].Pattern != "active.go" {
+		t.Errorf("surviving reservation should be active.go, got %s", remaining[0].Pattern)
+	}
+}
+
+// TestSubjectAutoTruncationBoundary documents the exact 80-char truncation
+// boundary for auto-generated subjects. Agents depend on this contract.
+func TestSubjectAutoTruncationBoundary(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "target", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	cases := []struct {
+		bodyLen       int
+		wantSubjectLen int
+	}{
+		{79, 79},  // under limit: subject == body
+		{80, 80},  // exactly at limit: subject == body
+		{81, 80},  // over limit: subject truncated to 80
+		{200, 80}, // well over: truncated to 80
+	}
+	for _, tc := range cases {
+		body := strings.Repeat("a", tc.bodyLen)
+		msg := core.Message{
+			From: "sender", To: "target", Body: body,
+		}
+		if err := d.Send(msg); err != nil {
+			t.Fatalf("send body len %d: %v", tc.bodyLen, err)
+		}
+	}
+
+	msgs, err := d.ReadInbox("target", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != len(cases) {
+		t.Fatalf("expected %d messages, got %d", len(cases), len(msgs))
+	}
+	for i, tc := range cases {
+		if len(msgs[i].Subject) != tc.wantSubjectLen {
+			t.Errorf("body len %d: subject len = %d, want %d", tc.bodyLen, len(msgs[i].Subject), tc.wantSubjectLen)
+		}
+		// Body should never be truncated
+		if len(msgs[i].Body) != tc.bodyLen {
+			t.Errorf("body len %d: body was modified to len %d", tc.bodyLen, len(msgs[i].Body))
+		}
+	}
+}
+
+// TestReleaseByWrongAgentReportsOwner verifies the error message includes
+// the actual owner's name. Agents parse these errors to understand conflicts.
+func TestReleaseByWrongAgentReportsOwner(t *testing.T) {
+	d := tempDir(t)
+	d.Reserve(core.Reservation{
+		ID: core.NewULID(), Agent: "rightful-owner", Pattern: "file.go", Repo: "/r",
+		Exclusive: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+
+	err := d.Release("intruder", "/r", "file.go")
+	if err == nil {
+		t.Fatal("expected error for wrong agent")
+	}
+	if !strings.Contains(err.Error(), "rightful-owner") {
+		t.Errorf("error should mention the actual owner 'rightful-owner', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "intruder") {
+		t.Errorf("error should mention the requesting agent 'intruder', got: %v", err)
+	}
+}
+
+// TestCheckOverlapIgnoresExpiredReservations verifies that expired reservations
+// are not reported as conflicts. Without this, agents would be blocked by
+// ghost reservations from crashed agents.
+func TestCheckOverlapIgnoresExpiredReservations(t *testing.T) {
+	d := tempDir(t)
+
+	// Create an expired reservation
+	d.Reserve(core.Reservation{
+		ID: core.NewULID(), Agent: "dead-agent", Pattern: "src/**", Repo: "/r",
+		Exclusive: true,
+		CreatedAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+	})
+
+	// New agent checking overlap should get zero conflicts
+	conflicts, err := d.CheckOverlap("new-agent", "/r", "src/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conflicts) != 0 {
+		t.Errorf("expected 0 conflicts (expired reservation), got %d", len(conflicts))
+	}
+}
+
+// TestReadUnreadFirstTimeNoCursor exercises the first --unread read on a
+// fresh agent that has never read before (no cursor file exists).
+// This is the most common agent startup path.
+func TestReadUnreadFirstTimeNoCursor(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Send a message
+	d.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "agent", Body: "hello",
+	})
+
+	// First unread read — no cursor file exists
+	// Should return all messages (cursor defaults to 0)
+	msgs, err := d.ReadInbox("agent", ReadOpts{Unread: true})
+	if err != nil {
+		t.Fatalf("first unread read failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 message on first unread read, got %d", len(msgs))
+	}
+}
+
+// TestMessageOrderingPreserved verifies that messages from sequential sends
+// appear in chronological order. Agents depend on this for conversation flow.
+func TestMessageOrderingPreserved(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "alice", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	for i := 0; i < 10; i++ {
+		d.Send(core.Message{
+			ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+			From: "bob", To: "alice", Body: fmt.Sprintf("msg-%02d", i),
+		})
+	}
+
+	msgs, err := d.ReadInbox("alice", ReadOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < len(msgs)-1; i++ {
+		if msgs[i].Body >= msgs[i+1].Body {
+			t.Errorf("messages out of order: [%d]=%s >= [%d]=%s",
+				i, msgs[i].Body, i+1, msgs[i+1].Body)
+		}
+	}
+}
+
+// TestGCStaleAgentRenamesHeartbeat verifies that GC marks stale agents by
+// renaming heartbeat→heartbeat.stale. This is how Athena detects dead agents.
+func TestGCStaleAgentRenamesHeartbeat(t *testing.T) {
+	d := tempDir(t)
+	d.Register(core.AgentMeta{Name: "stale-agent", RegisteredAt: time.Now().UTC().Format(time.RFC3339)})
+
+	// Backdate heartbeat
+	hbPath := filepath.Join(d.AgentDir("stale-agent"), "heartbeat")
+	old := time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+	os.WriteFile(hbPath, []byte(old+"\n"), 0644)
+
+	result, err := d.GC(5*time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StaleAgents != 1 {
+		t.Errorf("expected 1 stale agent, got %d", result.StaleAgents)
+	}
+
+	// heartbeat should be renamed to heartbeat.stale
+	if _, err := os.Stat(hbPath); !os.IsNotExist(err) {
+		t.Error("heartbeat file should have been renamed")
+	}
+	stalePath := filepath.Join(d.AgentDir("stale-agent"), "heartbeat.stale")
+	if _, err := os.Stat(stalePath); err != nil {
+		t.Errorf("heartbeat.stale should exist: %v", err)
 	}
 }

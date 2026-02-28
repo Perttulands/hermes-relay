@@ -5,7 +5,9 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,7 +245,7 @@ func (d *Dir) ReadInbox(agent string, opts ReadOpts) ([]core.Message, error) {
 		off, readErr := d.readCursor(agent)
 		if readErr == nil {
 			offset = off
-		} else if !os.IsNotExist(readErr) {
+		} else if !errors.Is(readErr, fs.ErrNotExist) {
 			return nil, fmt.Errorf("read cursor for %s: %w", agent, readErr)
 		}
 	}

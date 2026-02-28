@@ -427,6 +427,299 @@ func TestGetCardNonexistent(t *testing.T) {
 	}
 }
 
+// --- resolveDir tests ---
+
+func TestResolveDirExplicit(t *testing.T) {
+	dir, err := resolveDir("/tmp/custom-relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != "/tmp/custom-relay" {
+		t.Errorf("expected /tmp/custom-relay, got %s", dir)
+	}
+}
+
+func TestResolveDirFromEnv(t *testing.T) {
+	t.Setenv("RELAY_DIR", "/tmp/relay-env")
+	dir, err := resolveDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != "/tmp/relay-env" {
+		t.Errorf("expected /tmp/relay-env, got %s", dir)
+	}
+}
+
+func TestResolveDirDefaultHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("RELAY_DIR", "")
+	dir, err := resolveDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(home, ".relay")
+	if dir != expected {
+		t.Errorf("expected %s, got %s", expected, dir)
+	}
+}
+
+func TestResolveDirTildeAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := resolveDir("~")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != home {
+		t.Errorf("expected %s, got %s", home, dir)
+	}
+}
+
+func TestResolveDirTildePrefix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := resolveDir("~/my-relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(home, "my-relay")
+	if dir != expected {
+		t.Errorf("expected %s, got %s", expected, dir)
+	}
+}
+
+// --- resolveAgent tests ---
+
+func TestResolveAgentFromEnv(t *testing.T) {
+	t.Setenv("RELAY_AGENT", "custom-agent")
+	agent, err := resolveAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent != "custom-agent" {
+		t.Errorf("expected custom-agent, got %s", agent)
+	}
+}
+
+func TestResolveAgentFallbackHostname(t *testing.T) {
+	t.Setenv("RELAY_AGENT", "")
+	agent, err := resolveAgent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent == "" {
+		t.Error("expected non-empty agent from hostname")
+	}
+}
+
+// --- Send edge cases ---
+
+func TestSendEmptyRecipient(t *testing.T) {
+	root, _ := setupStore(t)
+	t.Setenv("RELAY_AGENT", "sender")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Send("", "message body")
+	if err == nil {
+		t.Fatal("expected error for empty recipient")
+	}
+}
+
+func TestSendEmptyWhitespaceRecipient(t *testing.T) {
+	root, _ := setupStore(t)
+	t.Setenv("RELAY_AGENT", "sender")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Send("   ", "message body")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only recipient")
+	}
+}
+
+func TestSendTruncatesLongSubject(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "sender", "receiver")
+	t.Setenv("RELAY_AGENT", "sender")
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	longBody := string(make([]byte, 200))
+	for i := range longBody {
+		longBody = longBody[:i] + "x" + longBody[i+1:]
+	}
+	// Build a string > 80 chars
+	longBody = ""
+	for i := 0; i < 100; i++ {
+		longBody += "x"
+	}
+
+	if err := c.Send("receiver", longBody); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("RELAY_AGENT", "receiver")
+	recv, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := recv.Read(ReadOpts{Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if len(msgs[0].Subject) > 80 {
+		t.Errorf("subject should be truncated to 80 chars, got %d", len(msgs[0].Subject))
+	}
+	if msgs[0].Body != longBody {
+		t.Error("body should not be truncated")
+	}
+}
+
+// --- NewClient edge cases ---
+
+func TestNewClientWithRelayDirEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("RELAY_DIR", dir)
+	t.Setenv("RELAY_AGENT", "env-agent")
+
+	c, err := NewClient("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestNewClientFallbackHostname(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("RELAY_AGENT", "")
+
+	c, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+	// The agent name should be the hostname
+	if c.agent == "" {
+		t.Error("expected agent to be set from hostname")
+	}
+}
+
+// --- Read edge cases ---
+
+func TestReadWithUnreadFilter(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "sender", "reader")
+
+	t.Setenv("RELAY_AGENT", "sender")
+	sender, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.Send("reader", "msg1")
+	sender.Send("reader", "msg2")
+
+	t.Setenv("RELAY_AGENT", "reader")
+	reader, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark read
+	msgs, err := reader.Read(ReadOpts{MarkRead: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2, got %d", len(msgs))
+	}
+
+	// Unread should be 0
+	msgs, err = reader.Read(ReadOpts{Unread: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 unread, got %d", len(msgs))
+	}
+}
+
+func TestReadWithSinceFilter(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "sender", "reader")
+
+	t.Setenv("RELAY_AGENT", "sender")
+	sender, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.Send("reader", "recent message")
+
+	t.Setenv("RELAY_AGENT", "reader")
+	reader, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Since 1 hour ago — should find the message
+	msgs, err := reader.Read(ReadOpts{Since: time.Now().Add(-1 * time.Hour), Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1, got %d", len(msgs))
+	}
+
+	// Since 1 hour in the future — should find nothing
+	msgs, err = reader.Read(ReadOpts{Since: time.Now().Add(1 * time.Hour), Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0, got %d", len(msgs))
+	}
+}
+
+func TestReadWithThreadFilter(t *testing.T) {
+	root, s := setupStore(t)
+	registerAgents(t, s, "sender", "reader")
+
+	// Use store directly to set thread (client.Send doesn't set thread)
+	s.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "reader", Body: "threaded", Thread: "t1",
+	})
+	s.Send(core.Message{
+		ID: core.NewULID(), TS: time.Now().UTC().Format(time.RFC3339),
+		From: "sender", To: "reader", Body: "no thread",
+	})
+
+	t.Setenv("RELAY_AGENT", "reader")
+	reader, err := NewClient(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := reader.Read(ReadOpts{Thread: "t1", Last: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 threaded message, got %d", len(msgs))
+	}
+}
+
 func TestUpdateCardSetsName(t *testing.T) {
 	root, s := setupStore(t)
 	registerAgents(t, s, "my-agent")

@@ -107,15 +107,7 @@ systemctl --user disable --now relay.service
 
 ## Dependencies
 
-### Beads (br CLI)
-
-Relay uses beads for tracking message delivery and agent coordination tasks.
-
-- Source: [Perttulands/beads_rust](https://github.com/Perttulands/beads_rust)
-- Install: `cargo install beads_rust` or build from source
-- Verify: `br --version`
-
-**Note:** `br` is non-invasive and never executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/ && git commit`.
+None. Standalone tool.
 
 ## Part of the Agora
 
