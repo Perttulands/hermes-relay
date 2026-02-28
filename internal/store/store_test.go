@@ -1396,9 +1396,9 @@ func TestListCommandsSkipsNonJSON(t *testing.T) {
 
 func TestIsExpiredMalformedTimestamp(t *testing.T) {
 	r := core.Reservation{ExpiresAt: "not-a-date"}
-	// isExpired should return false for unparseable timestamps
-	if isExpired(r) {
-		t.Error("expected false for malformed expiry")
+	// isExpired should return true for unparseable timestamps so GC collects them
+	if !isExpired(r) {
+		t.Error("expected true for malformed expiry — unparseable timestamps must be treated as expired")
 	}
 }
 
@@ -1417,6 +1417,94 @@ func TestIsExpiredPastReservation(t *testing.T) {
 	}
 	if !isExpired(r) {
 		t.Error("expected true for past expiry")
+	}
+}
+
+func TestIsExpiredEmptyTimestamp(t *testing.T) {
+	r := core.Reservation{ExpiresAt: ""}
+	if !isExpired(r) {
+		t.Error("expected true for empty expiry — must be treated as expired")
+	}
+}
+
+func TestGCRemovesUnparsableReservation(t *testing.T) {
+	d := tempDir(t)
+
+	// Create a reservation with an unparseable ExpiresAt directly via Reserve
+	bad := core.Reservation{
+		ID:        core.NewULID(),
+		Agent:     "agent-bad",
+		Pattern:   "src/**",
+		Repo:      "/repo",
+		Exclusive: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: "not-a-valid-timestamp",
+	}
+	if err := d.Reserve(bad); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also create a valid active reservation that should survive GC
+	good := core.Reservation{
+		ID:        core.NewULID(),
+		Agent:     "agent-good",
+		Pattern:   "docs/**",
+		Repo:      "/repo",
+		Exclusive: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: time.Now().Add(1 * time.Hour).UTC().Format(time.RFC3339),
+	}
+	if err := d.Reserve(good); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run GC
+	result, err := d.GC(30*time.Minute, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExpiredReservations != 1 {
+		t.Errorf("expected 1 expired reservation removed, got %d", result.ExpiredReservations)
+	}
+
+	// Verify the bad reservation is gone and the good one survives
+	remaining, err := d.ListReservations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 remaining reservation, got %d", len(remaining))
+	}
+	if remaining[0].Agent != "agent-good" {
+		t.Errorf("expected surviving reservation from agent-good, got %s", remaining[0].Agent)
+	}
+}
+
+func TestCheckOverlapIgnoresUnparsableReservation(t *testing.T) {
+	d := tempDir(t)
+
+	// Create a reservation with unparseable ExpiresAt
+	bad := core.Reservation{
+		ID:        core.NewULID(),
+		Agent:     "agent-bad",
+		Pattern:   "src/**",
+		Repo:      "/repo",
+		Exclusive: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt: "garbage-date",
+	}
+	if err := d.Reserve(bad); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another agent checking overlap on same pattern should see no conflicts
+	// because the unparseable reservation is treated as expired
+	conflicts, err := d.CheckOverlap("agent-new", "/repo", "src/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conflicts) != 0 {
+		t.Errorf("expected 0 conflicts (unparseable reservation treated as expired), got %d", len(conflicts))
 	}
 }
 

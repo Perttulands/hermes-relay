@@ -632,7 +632,7 @@ func patternsOverlap(a, b string) bool {
 func isExpired(r core.Reservation) bool {
 	t, err := time.Parse(time.RFC3339, r.ExpiresAt)
 	if err != nil {
-		return false
+		return true // unparseable timestamp → treat as expired so GC can collect it
 	}
 	return time.Now().After(t)
 }

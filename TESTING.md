@@ -24,7 +24,7 @@ E2E now covers the most important agent workflows end-to-end through the compile
 Core logic tests are strong: send/read roundtrip with all fields, unread cursor, concurrent writes, reservation conflicts, overlap detection. Several older edge_test.go tests still only check exit codes (e.g. `TestReserveQuiet`, `TestGCQuiet`) — they'd pass even if the feature was broken. These are coverage-only tests from a prior session and were not removed to avoid churn, but they have low regression value.
 
 ### 3. Edge Case & Error — 4/5
-Now covers: mid-file inbox corruption recovery, concurrent reserve race (O_CREAT|O_EXCL), subject truncation exact boundary (79/80/81), GC preserves active reservations, expired reservations ignored in overlap checks, wrong-agent release reports owner name, first-unread-read without cursor file. Still missing: flock contention failure, disk-full during atomic write, reservation with unparseable ExpiresAt (isExpired returns false, leaving stale reservations permanently).
+Now covers: mid-file inbox corruption recovery, concurrent reserve race (O_CREAT|O_EXCL), subject truncation exact boundary (79/80/81), GC preserves active reservations, expired reservations ignored in overlap checks, wrong-agent release reports owner name, first-unread-read without cursor file, unparseable ExpiresAt treated as expired (GC removes, overlap ignores). Still missing: flock contention failure, disk-full during atomic write.
 
 ### 4. Isolation & Reliability — 3/5
 All tests use temp dirs. **Known issues**: `setup()` in cli_test.go uses `os.Setenv`/manual restore instead of `t.Setenv` — if a test panics, env leaks. Watch tests use `time.Sleep(100ms)` — flaky under CI load. `captureRun` redirects `os.Stdout` — not parallel-safe. `withMockExec` mutates package-level var — not parallel-safe. These are pre-existing; fixing them requires refactoring the CLI test harness.
@@ -37,7 +37,7 @@ Hard to break message delivery, reservation conflicts, broadcast exclusion, conc
 **Critical gaps:**
 - **No test for `atomicWrite` failure paths** (53% coverage) — this is the core durability mechanism. A subtle bug here could cause silent data loss. Hard to test without filesystem fault injection.
 - **No test for flock contention failure** — if `syscall.Flock` returns an error (e.g. NFS, unsupported fs), messages could be lost. The code doesn't retry.
-- **`isExpired` returns false for unparseable timestamps** — a reservation with `expires_at: "garbage"` will never be garbage-collected and will permanently block its pattern. No test or safeguard exists.
+- ~~**`isExpired` returns false for unparseable timestamps**~~ — **Fixed**: `isExpired` now returns `true` for unparseable timestamps. Tested by `TestIsExpiredMalformedTimestamp`, `TestIsExpiredEmptyTimestamp`, `TestGCRemovesUnparsableReservation`, and `TestCheckOverlapIgnoresUnparsableReservation`.
 
 **Important gaps:**
 - **No parallel-safe CLI tests** — `os.Setenv`, `os.Stdout` redirect, package-level mock prevent `t.Parallel()`. A refactor to use dependency injection would fix this.
@@ -73,3 +73,10 @@ Hard to break message delivery, reservation conflicts, broadcast exclusion, conc
 - **Added**: `TestE2E_ReserveConflictAndForce` — conflict detection and force-override through binary.
 - **Added**: `TestE2E_CommandPostAndList` — command queue through binary: post, verify in status.
 - Coverage delta: 84.4% → ~85% (meaningful: 19 new tests covering real behaviours, 1 bug fix)
+
+### 2026-02-28 — Agent: Claude Opus 4.6 (pol-4jwa)
+- **Fixed**: `isExpired` returned `false` for unparseable `ExpiresAt` timestamps, causing reservations with malformed timestamps to never be garbage-collected and permanently block their patterns. Changed to return `true` (treat as expired). Consistent with `Metrics()` which already counted unparseable as expired.
+- **Updated**: `TestIsExpiredMalformedTimestamp` — now asserts `true` (was asserting the buggy `false` behavior).
+- **Added**: `TestIsExpiredEmptyTimestamp` — empty string ExpiresAt returns true.
+- **Added**: `TestGCRemovesUnparsableReservation` — integration test: GC removes reservation with malformed timestamp while preserving active reservations.
+- **Added**: `TestCheckOverlapIgnoresUnparsableReservation` — unparseable reservation doesn't create false conflicts blocking new agents.
