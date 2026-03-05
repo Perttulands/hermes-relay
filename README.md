@@ -1,6 +1,6 @@
 # 📡 Relay
 
-![Relay](images/relay.jpg)
+![Relay Banner](banner.png)
 
 
 *Winged sandals. Caduceus of data streams. Zero-loss tally. Always mid-stride. Never standing still.*
