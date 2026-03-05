@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Perttulands/relay/internal/core"
-	"github.com/Perttulands/relay/internal/store"
+	"github.com/Perttulands/hermes-relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
 // Message is a Relay message.

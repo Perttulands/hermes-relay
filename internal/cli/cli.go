@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Perttulands/relay/internal/core"
-	"github.com/Perttulands/relay/internal/store"
+	"github.com/Perttulands/hermes-relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
 const Version = "0.1.0"

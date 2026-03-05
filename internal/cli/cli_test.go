@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Perttulands/relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/core"
 )
 
 func setup(t *testing.T) (string, func()) {

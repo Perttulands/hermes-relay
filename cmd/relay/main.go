@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/Perttulands/relay/internal/cli"
+	"github.com/Perttulands/hermes-relay/internal/cli"
 )
 
 func main() {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Perttulands/relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/core"
 )
 
 func tempDir(t *testing.T) *Dir {

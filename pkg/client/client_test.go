@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Perttulands/relay/internal/core"
-	"github.com/Perttulands/relay/internal/store"
+	"github.com/Perttulands/hermes-relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
 func setupStore(t *testing.T) (string, *store.Dir) {

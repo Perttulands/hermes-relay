@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Perttulands/relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/core"
 	"github.com/fsnotify/fsnotify"
 )
 

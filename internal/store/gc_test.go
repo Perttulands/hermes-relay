@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Perttulands/relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/core"
 )
 
 func TestGCStaleAgents(t *testing.T) {

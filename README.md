@@ -47,7 +47,7 @@ package main
 import (
 	"log"
 
-	"github.com/Perttulands/relay/pkg/client"
+	"github.com/Perttulands/hermes-relay/pkg/client"
 )
 
 func main() {
@@ -113,7 +113,7 @@ None. Standalone tool.
 
 Relay was forged in **[Athena's Agora](https://github.com/Perttulands/athena-workspace)** — an autonomous coding system where AI agents build software and a messenger with winged sandals makes sure they can actually talk to each other.
 
-[Argus](https://github.com/Perttulands/argus) watches the server. [Truthsayer](https://github.com/Perttulands/truthsayer) watches the code. [Oathkeeper](https://github.com/Perttulands/oathkeeper) watches the promises. Relay carries the messages. The nervous system of the Agora. Zero messages lost.
+[Argus](https://github.com/Perttulands/argus-watcher) watches the server. [Truthsayer](https://github.com/Perttulands/truthsayer) watches the code. [Oathkeeper](https://github.com/Perttulands/horkos-oathkeeper) watches the promises. Relay carries the messages. The nervous system of the Agora. Zero messages lost.
 
 The [mythology](https://github.com/Perttulands/athena-workspace/blob/main/mythology.md) has the full story.
 
