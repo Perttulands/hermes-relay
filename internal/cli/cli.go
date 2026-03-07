@@ -128,6 +128,8 @@ func Run(args []string) int {
 		return ctx.cmdSpawn(cmdArgs)
 	case "card":
 		return ctx.cmdCard(cmdArgs)
+	case "throttle":
+		return ctx.cmdThrottle(cmdArgs)
 	default:
 		errorf("unknown command: %s", cmd)
 		usage()
@@ -391,6 +393,10 @@ func (c *context) cmdSend(args []string) int {
 	}
 
 	if wake {
+		if c.store.IsThrottled() {
+			fmt.Fprintf(os.Stderr, "wake: suspended (city-wide throttle active)\n")
+			return 0
+		}
 		if to != "" {
 			// Try direct session injection via openclaw system event
 			meta, metaErr := c.store.ReadMeta(to)
@@ -1169,6 +1175,93 @@ func (c *context) cmdCard(args []string) int {
 	return 0
 }
 
+func (c *context) cmdThrottle(args []string) int {
+	suspendAll := flagBool(args, "--suspend-all")
+	resume := flagBool(args, "--resume")
+	status := flagBool(args, "--status")
+	setBudget := flagBool(args, "--set-budget")
+
+	if !suspendAll && !resume && !status && !setBudget {
+		errorf("usage: relay throttle --suspend-all | --resume | --status | --set-budget <agent> <N>")
+		return 1
+	}
+
+	if suspendAll {
+		if err := c.store.SetThrottled(true, c.agent); err != nil {
+			errorf("throttle: %v", err)
+			return 1
+		}
+		if !c.quiet {
+			fmt.Println("throttle: all autonomous wakes suspended")
+		}
+		return 0
+	}
+
+	if resume {
+		if err := c.store.SetThrottled(false, ""); err != nil {
+			errorf("throttle: %v", err)
+			return 1
+		}
+		if !c.quiet {
+			fmt.Println("throttle: resumed normal operation")
+		}
+		return 0
+	}
+
+	if setBudget {
+		positional := flagPositional(args)
+		if len(positional) < 2 {
+			errorf("usage: relay throttle --set-budget <agent> <N>")
+			return 1
+		}
+		agent := positional[0]
+		var n int
+		if _, err := fmt.Sscanf(positional[1], "%d", &n); err != nil {
+			errorf("throttle: invalid budget %q: %v", positional[1], err)
+			return 1
+		}
+		if err := c.store.SetBudget(agent, n); err != nil {
+			errorf("throttle: %v", err)
+			return 1
+		}
+		if !c.quiet {
+			fmt.Printf("throttle: set %s budget to %d\n", agent, n)
+		}
+		return 0
+	}
+
+	// --status
+	state, err := c.store.GetThrottleState()
+	if err != nil {
+		errorf("throttle: %v", err)
+		return 1
+	}
+	if c.json {
+		outputJSON(state)
+		return 0
+	}
+	if state.Suspended {
+		at := ""
+		if state.SuspendedAt != nil {
+			at = " at " + *state.SuspendedAt
+		}
+		by := ""
+		if state.SuspendedBy != "" {
+			by = " by " + state.SuspendedBy
+		}
+		fmt.Printf("THROTTLE: SUSPENDED%s%s\n", by, at)
+	} else {
+		fmt.Println("THROTTLE: normal operation")
+	}
+	if len(state.Budgets) > 0 {
+		fmt.Println("BUDGETS:")
+		for agent, n := range state.Budgets {
+			fmt.Printf("  %-20s %d\n", agent, n)
+		}
+	}
+	return 0
+}
+
 func printCard(card core.AgentCard) {
 	skills := "(none)"
 	if len(card.Skills) > 0 {
@@ -1365,6 +1458,7 @@ COMMANDS:
   relay heartbeat                     Update agent heartbeat
   relay card [agent]                   Show an agent's card (default: self)
   relay card --all                    Show all agent cards
+  relay throttle [flags]              City-wide wake throttle (kill switch)
   relay metrics [flags]               Show aggregate system metrics
   relay gc                            Clean up expired reservations and stale agents
   relay version                       Print version
@@ -1420,7 +1514,8 @@ func parseFlags(args []string) map[string]string {
 			if key == "broadcast" || key == "wake" || key == "check" || key == "force" ||
 				key == "shared" || key == "all" || key == "unread" || key == "mark-read" ||
 				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
-				key == "loop" || key == "wait" || key == "idle" {
+				key == "loop" || key == "wait" || key == "idle" ||
+				key == "suspend-all" || key == "resume" || key == "status" || key == "set-budget" {
 				continue
 			}
 			flags[key] = args[i+1]
@@ -1448,6 +1543,7 @@ func flagPositional(args []string) []string {
 		"--shared": true, "--all": true, "--unread": true, "--mark-read": true,
 		"--dry-run": true, "--expired-only": true, "--expired": true, "--tail": true,
 		"--json": true, "--quiet": true, "--loop": true, "--wait": true, "--idle": true,
+		"--suspend-all": true, "--resume": true, "--status": true, "--set-budget": true,
 	}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
