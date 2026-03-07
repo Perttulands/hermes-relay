@@ -188,7 +188,7 @@ func extractGlobalFlags(args []string) (globalFlagsT, []string) {
 
 func (c *context) cmdRegister(args []string) int {
 	if len(args) < 1 {
-		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>] [--skills <s1,s2>]")
+		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>] [--skills <s1,s2>] [--budget <N>] [--cooldown <dur>]")
 		return 1
 	}
 	name := args[0]
@@ -227,6 +227,22 @@ func (c *context) cmdRegister(args []string) int {
 	if task := flags["task"]; task != "" {
 		card.CurrentTask = task
 		card.Status = core.AgentWorking
+	}
+	if b := flags["budget"]; b != "" {
+		var n int
+		if _, err := fmt.Sscanf(b, "%d", &n); err != nil || n < 0 {
+			errorf("register: invalid --budget value %q", b)
+			return 1
+		}
+		card.BudgetLimit = n
+	}
+	if cd := flags["cooldown"]; cd != "" {
+		d := parseDuration(cd)
+		if d <= 0 {
+			errorf("register: invalid --cooldown value %q (use e.g. 5m)", cd)
+			return 1
+		}
+		card.CooldownSecs = int(d.Seconds())
 	}
 	if err := c.store.WriteCard(card); err != nil {
 		errorf("register: write card: %v", err)
@@ -407,6 +423,33 @@ func (c *context) cmdSend(args []string) int {
 			return 0
 		}
 
+		// Per-agent cooldown check
+		if to != "" {
+			cooling, cdErr := c.store.IsCoolingDown(to)
+			if cdErr == nil && cooling {
+				fmt.Fprintf(os.Stderr, "wake: %s is cooling down, skipping injection (message delivered to inbox)\n", to)
+				return 0
+			}
+		}
+
+		// Per-agent budget check
+		if to != "" {
+			allowed, budErr := c.store.CheckAndIncrementBudget(to)
+			if budErr != nil {
+				errorf("budget: %v", budErr)
+				// best-effort: proceed without budget tracking
+			} else if !allowed {
+				fmt.Fprintf(os.Stderr, "wake: %s budget exhausted, skipping injection (message delivered to inbox)\n", to)
+				// Fire a bead for visibility
+				brBin := resolveBRBinary()
+				brCmd := execCommand(brBin, "create",
+					fmt.Sprintf("budget exceeded: %s", to),
+					"-p", "2", "-t", "task")
+				_ = brCmd.Run() // best-effort
+				return 0
+			}
+		}
+
 		// Chain depth enforcement
 		if to != "" {
 			// Generate chain ID if not provided
@@ -469,6 +512,7 @@ func (c *context) cmdSend(args []string) int {
 				}
 				cmd := execCommand("openclaw", injArgs...)
 				if err := cmd.Run(); err == nil {
+					_ = c.store.UpdateCooldown(to) // best-effort
 					if !c.quiet {
 						fmt.Printf("wake: injected into %s session (chain: %s)\n", to, chainID)
 					}
@@ -481,6 +525,7 @@ func (c *context) cmdSend(args []string) int {
 			svcName := fmt.Sprintf("openclaw-%s.service", to)
 			cmd := execCommand("systemctl", "--user", "start", svcName)
 			if err := cmd.Run(); err == nil {
+				_ = c.store.UpdateCooldown(to) // best-effort
 				if !c.quiet {
 					fmt.Printf("wake: started %s (chain: %s)\n", svcName, chainID)
 				}
