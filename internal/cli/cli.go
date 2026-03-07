@@ -130,6 +130,8 @@ func Run(args []string) int {
 		return ctx.cmdCard(cmdArgs)
 	case "throttle":
 		return ctx.cmdThrottle(cmdArgs)
+	case "policy":
+		return ctx.cmdPolicy(cmdArgs)
 	default:
 		errorf("unknown command: %s", cmd)
 		usage()
@@ -446,6 +448,21 @@ func (c *context) cmdSend(args []string) int {
 					fmt.Sprintf("budget exceeded: %s", to),
 					"-p", "2", "-t", "task")
 				_ = brCmd.Run() // best-effort
+				return 0
+			}
+		}
+
+		// Activation policy check
+		if to != "" {
+			policy, polErr := c.store.LoadPolicy()
+			if polErr != nil {
+				errorf("policy: %v", polErr)
+				// best-effort: deny on error (conservative)
+				fmt.Fprintf(os.Stderr, "wake: unauthorized (policy)\n")
+				return 0
+			}
+			if !policy.IsAllowed(c.agent, to) {
+				fmt.Fprintf(os.Stderr, "wake: unauthorized (policy)\n")
 				return 0
 			}
 		}
@@ -1365,6 +1382,100 @@ func (c *context) cmdThrottle(args []string) int {
 	return 0
 }
 
+func (c *context) cmdPolicy(args []string) int {
+	show := flagBool(args, "--show")
+	reset := flagBool(args, "--reset")
+	allowRule := flagBool(args, "--allow")
+	denyRule := flagBool(args, "--deny")
+
+	if !show && !reset && !allowRule && !denyRule {
+		errorf("usage: relay policy --show | --allow <from> <to> | --deny <from> <to> | --reset")
+		return 1
+	}
+
+	if show {
+		policy, err := c.store.LoadPolicy()
+		if err != nil {
+			errorf("policy: %v", err)
+			return 1
+		}
+		if c.json {
+			outputJSON(policy)
+			return 0
+		}
+		fmt.Printf("default: %s\n", policy.Default)
+		if len(policy.Allow) > 0 {
+			fmt.Println("\nALLOW:")
+			for _, r := range policy.Allow {
+				fmt.Printf("  %s → %s\n", r.From, r.To)
+			}
+		}
+		if len(policy.Deny) > 0 {
+			fmt.Println("\nDENY:")
+			for _, r := range policy.Deny {
+				fmt.Printf("  %s → %s\n", r.From, r.To)
+			}
+		}
+		if len(policy.Allow) == 0 && len(policy.Deny) == 0 {
+			fmt.Println("\n(no rules)")
+		}
+		return 0
+	}
+
+	if reset {
+		policy := store.DefaultPolicy()
+		if err := c.store.SavePolicy(policy); err != nil {
+			errorf("policy: %v", err)
+			return 1
+		}
+		if !c.quiet {
+			fmt.Println("policy: reset to default deny")
+		}
+		return 0
+	}
+
+	// --allow or --deny: need from and to positional args
+	positional := flagPositional(args)
+	if len(positional) < 2 {
+		if allowRule {
+			errorf("usage: relay policy --allow <from> <to>")
+		} else {
+			errorf("usage: relay policy --deny <from> <to>")
+		}
+		return 1
+	}
+
+	from := positional[0]
+	to := positional[1]
+
+	policy, err := c.store.LoadPolicy()
+	if err != nil {
+		errorf("policy: %v", err)
+		return 1
+	}
+
+	rule := store.PolicyRule{From: from, To: to}
+	if allowRule {
+		policy.Allow = append(policy.Allow, rule)
+	} else {
+		policy.Deny = append(policy.Deny, rule)
+	}
+
+	if err := c.store.SavePolicy(policy); err != nil {
+		errorf("policy: %v", err)
+		return 1
+	}
+
+	if !c.quiet {
+		kind := "allow"
+		if denyRule {
+			kind = "deny"
+		}
+		fmt.Printf("policy: added %s rule %s → %s\n", kind, from, to)
+	}
+	return 0
+}
+
 func printCard(card core.AgentCard) {
 	skills := "(none)"
 	if len(card.Skills) > 0 {
@@ -1562,6 +1673,7 @@ COMMANDS:
   relay card [agent]                   Show an agent's card (default: self)
   relay card --all                    Show all agent cards
   relay throttle [flags]              City-wide wake throttle (kill switch)
+  relay policy [flags]                Manage activation policy (who can wake whom)
   relay metrics [flags]               Show aggregate system metrics
   relay gc                            Clean up expired reservations and stale agents
   relay version                       Print version
@@ -1620,7 +1732,8 @@ func parseFlags(args []string) map[string]string {
 				key == "shared" || key == "all" || key == "unread" || key == "mark-read" ||
 				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
 				key == "loop" || key == "wait" || key == "idle" ||
-				key == "suspend-all" || key == "resume" || key == "status" || key == "set-budget" {
+				key == "suspend-all" || key == "resume" || key == "status" || key == "set-budget" ||
+				key == "show" || key == "allow" || key == "deny" || key == "reset" {
 				continue
 			}
 			flags[key] = args[i+1]
@@ -1649,6 +1762,7 @@ func flagPositional(args []string) []string {
 		"--dry-run": true, "--expired-only": true, "--expired": true, "--tail": true,
 		"--json": true, "--quiet": true, "--loop": true, "--wait": true, "--idle": true,
 		"--suspend-all": true, "--resume": true, "--status": true, "--set-budget": true,
+		"--show": true, "--allow": true, "--deny": true, "--reset": true,
 	}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {

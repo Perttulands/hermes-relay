@@ -171,8 +171,10 @@ func TestSendWakeCooldownSkipsInjection(t *testing.T) {
 }
 
 func TestSendWakeAllowedWhenBudgetAndCooldownOk(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
 
 	run("register", "target", "--gateway-url", "ws://localhost:4000/")
 	run("register", "test-agent")

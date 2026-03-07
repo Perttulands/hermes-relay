@@ -173,8 +173,10 @@ func TestSendWakeSkipsWhenThrottled(t *testing.T) {
 }
 
 func TestSendWakeWorksWhenNotThrottled(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
 
 	run("register", "test-agent")
 	run("register", "target")

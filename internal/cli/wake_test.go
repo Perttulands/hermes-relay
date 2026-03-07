@@ -12,8 +12,10 @@ import (
 )
 
 func TestSendWakeInjectsViaOpenClaw(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
 
 	// Register target with gateway_url
 	run("register", "target-agent", "--gateway-url", "ws://localhost:4000/", "--gateway-token", "tok123")
@@ -62,8 +64,10 @@ func TestSendWakeInjectsViaOpenClaw(t *testing.T) {
 }
 
 func TestSendWakeFallsBackWhenNoGatewayURL(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
 
 	// Register target WITHOUT gateway_url
 	run("register", "target-agent")
@@ -100,8 +104,10 @@ func TestSendWakeFallsBackWhenNoGatewayURL(t *testing.T) {
 }
 
 func TestSendWakeFallsBackWhenOpenClawFails(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
 
 	// Register target with gateway_url
 	run("register", "target-agent", "--gateway-url", "ws://localhost:4000/")
@@ -155,8 +161,10 @@ func TestRegisterGatewayFlagsWrittenToMeta(t *testing.T) {
 }
 
 func TestSendWakeNoTokenWhenEmpty(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
 
 	// Register target with gateway_url but NO token
 	run("register", "target-agent", "--gateway-url", "ws://localhost:5000/")
