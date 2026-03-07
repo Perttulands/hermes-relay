@@ -132,6 +132,10 @@ func Run(args []string) int {
 		return ctx.cmdThrottle(cmdArgs)
 	case "policy":
 		return ctx.cmdPolicy(cmdArgs)
+	case "spend":
+		return ctx.cmdSpend(cmdArgs)
+	case "log":
+		return ctx.cmdLog(cmdArgs)
 	default:
 		errorf("unknown command: %s", cmd)
 		usage()
@@ -420,8 +424,12 @@ func (c *context) cmdSend(args []string) int {
 	}
 
 	if wake && !noWake {
+		// Resolve chain depth for logging
+		wakeDepth := 0
+
 		if c.store.IsThrottled() {
 			fmt.Fprintf(os.Stderr, "wake: suspended (city-wide throttle active)\n")
+			logActivation(c.store, c.agent, to, chainID, wakeDepth, "throttled", "city-wide throttle active")
 			return 0
 		}
 
@@ -430,6 +438,7 @@ func (c *context) cmdSend(args []string) int {
 			cooling, cdErr := c.store.IsCoolingDown(to)
 			if cdErr == nil && cooling {
 				fmt.Fprintf(os.Stderr, "wake: %s is cooling down, skipping injection (message delivered to inbox)\n", to)
+				logActivation(c.store, c.agent, to, chainID, wakeDepth, "cooling_down", "")
 				return 0
 			}
 		}
@@ -442,6 +451,7 @@ func (c *context) cmdSend(args []string) int {
 				// best-effort: proceed without budget tracking
 			} else if !allowed {
 				fmt.Fprintf(os.Stderr, "wake: %s budget exhausted, skipping injection (message delivered to inbox)\n", to)
+				logActivation(c.store, c.agent, to, chainID, wakeDepth, "budget_exceeded", "")
 				// Fire a bead for visibility
 				brBin := resolveBRBinary()
 				brCmd := execCommand(brBin, "create",
@@ -459,10 +469,12 @@ func (c *context) cmdSend(args []string) int {
 				errorf("policy: %v", polErr)
 				// best-effort: deny on error (conservative)
 				fmt.Fprintf(os.Stderr, "wake: unauthorized (policy)\n")
+				logActivation(c.store, c.agent, to, chainID, wakeDepth, "policy_denied", "policy load error")
 				return 0
 			}
 			if !policy.IsAllowed(c.agent, to) {
 				fmt.Fprintf(os.Stderr, "wake: unauthorized (policy)\n")
+				logActivation(c.store, c.agent, to, chainID, wakeDepth, "policy_denied", "")
 				return 0
 			}
 		}
@@ -480,6 +492,10 @@ func (c *context) cmdSend(args []string) int {
 				// best-effort: proceed without chain tracking
 			}
 
+			if chain != nil {
+				wakeDepth = chain.Depth
+			}
+
 			if chain != nil && chain.Depth > chain.MaxDepth {
 				// Depth exceeded: suspend chain, skip wake injection
 				chain.Suspended = true
@@ -494,6 +510,8 @@ func (c *context) cmdSend(args []string) int {
 				}
 				fmt.Fprintf(os.Stderr, "wake: chain %s suspended at depth %d (max %d): %s\n",
 					chainID, chain.Depth, chain.MaxDepth, preview)
+
+				logActivation(c.store, c.agent, to, chainID, chain.Depth, "depth_exceeded", fmt.Sprintf("max %d", chain.MaxDepth))
 
 				// Notify athena (no-wake to prevent recursion)
 				notifyBody := fmt.Sprintf("Chain %s suspended at depth %d: %s", chainID, chain.Depth, preview)
@@ -530,12 +548,13 @@ func (c *context) cmdSend(args []string) int {
 				cmd := execCommand("openclaw", injArgs...)
 				if err := cmd.Run(); err == nil {
 					_ = c.store.UpdateCooldown(to) // best-effort
+					logActivation(c.store, c.agent, to, chainID, wakeDepth, "delivered", "gateway injection")
 					if !c.quiet {
 						fmt.Printf("wake: injected into %s session (chain: %s)\n", to, chainID)
 					}
 					return 0
 				}
-				// fall through to existing logic
+				// fall through to existing logic — log injection_failed below
 			}
 
 			// Try to wake the target agent's OpenClaw service
@@ -543,10 +562,12 @@ func (c *context) cmdSend(args []string) int {
 			cmd := execCommand("systemctl", "--user", "start", svcName)
 			if err := cmd.Run(); err == nil {
 				_ = c.store.UpdateCooldown(to) // best-effort
+				logActivation(c.store, c.agent, to, chainID, wakeDepth, "delivered", "systemctl start")
 				if !c.quiet {
 					fmt.Printf("wake: started %s (chain: %s)\n", svcName, chainID)
 				}
 			} else {
+				logActivation(c.store, c.agent, to, chainID, wakeDepth, "injection_failed", fmt.Sprintf("systemctl start %s failed", svcName))
 				// best-effort: systemctl start failed, fall back to default wake (Athena gateway)
 				c.doWake("")
 			}
@@ -1476,6 +1497,162 @@ func (c *context) cmdPolicy(args []string) int {
 	return 0
 }
 
+// logActivation appends a wake outcome to the activation log.
+func logActivation(s *store.Dir, sender, target, chainID string, depth int, outcome, reason string) {
+	entry := store.ActivationLogEntry{
+		TS:      time.Now().UTC().Format(time.RFC3339),
+		Sender:  sender,
+		Target:  target,
+		ChainID: chainID,
+		Depth:   depth,
+		Outcome: outcome,
+		Reason:  reason,
+	}
+	// Read gateway URL for the target if available (best-effort).
+	if meta, err := s.ReadMeta(target); err == nil && meta.GatewayURL != "" {
+		entry.GatewayURL = meta.GatewayURL
+	}
+	_ = s.AppendActivationLog(entry) // best-effort
+}
+
+func (c *context) cmdSpend(args []string) int {
+	flags := parseFlags(args)
+	today := flagBool(args, "--today")
+	week := flagBool(args, "--week")
+	agentFilter := flags["target"]
+
+	if !today && !week && agentFilter == "" {
+		errorf("usage: relay spend --today | --week | --target <name>")
+		return 1
+	}
+
+	opts := store.LogReadOpts{}
+
+	now := time.Now()
+	if today {
+		y, m, d := now.Date()
+		opts.StartDate = time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+		opts.EndDate = opts.StartDate.Add(24 * time.Hour)
+	} else if week {
+		y, m, d := now.Date()
+		today := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+		weekday := int(today.Weekday())
+		if weekday == 0 {
+			weekday = 7 // Sunday = 7
+		}
+		opts.StartDate = today.AddDate(0, 0, -(weekday - 1)) // Monday
+		opts.EndDate = opts.StartDate.AddDate(0, 0, 7)
+	}
+
+	if agentFilter != "" {
+		opts.Agent = agentFilter
+	}
+
+	entries, err := c.store.ReadActivationLog(opts)
+	if err != nil {
+		errorf("spend: %v", err)
+		return 1
+	}
+
+	// Aggregate by target agent
+	counts := make(map[string]int)
+	for _, e := range entries {
+		if e.Outcome == "delivered" {
+			counts[e.Target]++
+		}
+	}
+
+	if c.json {
+		outputJSON(counts)
+		return 0
+	}
+
+	if len(counts) == 0 {
+		if !c.quiet {
+			fmt.Println("no activations")
+		}
+		return 0
+	}
+
+	total := 0
+	for agent, n := range counts {
+		fmt.Printf("  %-20s %d wake(s)\n", agent, n)
+		total += n
+	}
+	fmt.Printf("  %-20s %d total\n", "---", total)
+	return 0
+}
+
+func (c *context) cmdLog(args []string) int {
+	flags := parseFlags(args)
+	chainFilter := flags["chain"]
+	tail := flagBool(args, "--tail")
+
+	if chainFilter == "" && !tail {
+		errorf("usage: relay log --chain <id> | --tail [N]")
+		return 1
+	}
+
+	opts := store.LogReadOpts{}
+
+	if chainFilter != "" {
+		opts.ChainID = chainFilter
+	}
+
+	if tail {
+		n := 20 // default
+		// Check if there's a positional number after --tail
+		positional := flagPositional(args)
+		if len(positional) > 0 {
+			fmt.Sscanf(positional[0], "%d", &n)
+		}
+		if n <= 0 {
+			n = 20
+		}
+		opts.Tail = n
+	}
+
+	entries, err := c.store.ReadActivationLog(opts)
+	if err != nil {
+		errorf("log: %v", err)
+		return 1
+	}
+
+	if c.json {
+		outputJSON(entries)
+		return 0
+	}
+
+	if len(entries) == 0 {
+		if !c.quiet {
+			fmt.Println("no activations")
+		}
+		return 0
+	}
+
+	for _, e := range entries {
+		ts, err := time.Parse(time.RFC3339, e.TS)
+		tsStr := e.TS
+		if err == nil {
+			tsStr = ts.Format("2006-01-02 15:04")
+		}
+		chainStr := ""
+		if e.ChainID != "" {
+			cid := e.ChainID
+			if len(cid) > 6 {
+				cid = cid[:6]
+			}
+			chainStr = fmt.Sprintf("  chain:%s", cid)
+		}
+		depthStr := ""
+		if e.Depth > 0 {
+			depthStr = fmt.Sprintf("  depth:%d", e.Depth)
+		}
+		fmt.Printf("%s  %s → %s%s%s  %s\n", tsStr, e.Sender, e.Target, chainStr, depthStr, e.Outcome)
+	}
+	return 0
+}
+
 func printCard(card core.AgentCard) {
 	skills := "(none)"
 	if len(card.Skills) > 0 {
@@ -1674,6 +1851,8 @@ COMMANDS:
   relay card --all                    Show all agent cards
   relay throttle [flags]              City-wide wake throttle (kill switch)
   relay policy [flags]                Manage activation policy (who can wake whom)
+  relay spend [flags]                 Show wake activation spend
+  relay log [flags]                   Show activation log
   relay metrics [flags]               Show aggregate system metrics
   relay gc                            Clean up expired reservations and stale agents
   relay version                       Print version
@@ -1689,6 +1868,15 @@ SEND FLAGS:
   --wake             Wake target agent after sending
   --chain-id <uuid>  Propagate an existing wake chain
   --max-depth <n>    Maximum chain depth (default: 3)
+
+SPEND FLAGS:
+  --today              Sum all wakes today by agent
+  --week               Sum all wakes this week by agent
+  --target <name>      All-time spend for one agent
+
+LOG FLAGS:
+  --chain <id>         Show full chain trace
+  --tail [N]           Show last N activations (default: 20)
 
 READ FLAGS:
   --from <agent>     Filter by sender
@@ -1733,7 +1921,8 @@ func parseFlags(args []string) map[string]string {
 				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
 				key == "loop" || key == "wait" || key == "idle" ||
 				key == "suspend-all" || key == "resume" || key == "status" || key == "set-budget" ||
-				key == "show" || key == "allow" || key == "deny" || key == "reset" {
+				key == "show" || key == "allow" || key == "deny" || key == "reset" ||
+				key == "today" || key == "week" {
 				continue
 			}
 			flags[key] = args[i+1]
@@ -1763,6 +1952,7 @@ func flagPositional(args []string) []string {
 		"--json": true, "--quiet": true, "--loop": true, "--wait": true, "--idle": true,
 		"--suspend-all": true, "--resume": true, "--status": true, "--set-budget": true,
 		"--show": true, "--allow": true, "--deny": true, "--reset": true,
+		"--today": true, "--week": true,
 	}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
