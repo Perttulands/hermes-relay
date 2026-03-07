@@ -46,6 +46,9 @@ type AgentMeta struct {
 	Model        string `json:"model,omitempty"`
 	Task         string `json:"task,omitempty"`
 	Bead         string `json:"bead,omitempty"`
+	GatewayURL   string `json:"gateway_url,omitempty"`
+	GatewayToken string `json:"gateway_token,omitempty"`
+	SessionKey   string `json:"session_key,omitempty"`
 	RegisteredAt string `json:"registered_at"`
 }
 

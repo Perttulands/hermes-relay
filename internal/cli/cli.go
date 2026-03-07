@@ -203,6 +203,9 @@ func (c *context) cmdRegister(args []string) int {
 		Model:        flags["model"],
 		Task:         flags["task"],
 		Bead:         flags["bead"],
+		GatewayURL:   flags["gateway-url"],
+		GatewayToken: flags["gateway-token"],
+		SessionKey:   flags["session-key"],
 		RegisteredAt: now,
 	}
 	if err := c.store.Register(meta); err != nil {
@@ -388,8 +391,29 @@ func (c *context) cmdSend(args []string) int {
 	}
 
 	if wake {
-		// Try to wake the target agent's OpenClaw service first
 		if to != "" {
+			// Try direct session injection via openclaw system event
+			meta, metaErr := c.store.ReadMeta(to)
+			if metaErr == nil && meta.GatewayURL != "" {
+				injArgs := []string{"system", "event",
+					"--url", meta.GatewayURL,
+					"--text", body,
+					"--mode", "now",
+				}
+				if meta.GatewayToken != "" {
+					injArgs = append(injArgs, "--token", meta.GatewayToken)
+				}
+				cmd := execCommand("openclaw", injArgs...)
+				if err := cmd.Run(); err == nil {
+					if !c.quiet {
+						fmt.Printf("wake: injected into %s session\n", to)
+					}
+					return 0
+				}
+				// fall through to existing logic
+			}
+
+			// Try to wake the target agent's OpenClaw service
 			svcName := fmt.Sprintf("openclaw-%s.service", to)
 			cmd := execCommand("systemctl", "--user", "start", svcName)
 			if err := cmd.Run(); err == nil {
@@ -1337,7 +1361,7 @@ COMMANDS:
   relay cmd <session> <command>       Inject a slash command into a session
   relay spawn [flags]                 Spawn an agent task via dispatch
   relay status                        Show all agents, heartbeats, reservations
-  relay register <name> [flags]       Register agent identity
+  relay register <name> [flags]       Register agent identity (incl. gateway flags)
   relay heartbeat                     Update agent heartbeat
   relay card [agent]                   Show an agent's card (default: self)
   relay card --all                    Show all agent cards
