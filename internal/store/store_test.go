@@ -29,7 +29,7 @@ func TestNewCreatesDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, sub := range []string{"agents", "reservations", "commands", "wake"} {
+	for _, sub := range []string{"agents", "reservations", "commands", "wake", "chains"} {
 		path := filepath.Join(root, sub)
 		info, err := os.Stat(path)
 		if err != nil {

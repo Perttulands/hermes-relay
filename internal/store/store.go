@@ -30,6 +30,7 @@ func New(root string) (*Dir, error) {
 		filepath.Join(root, "reservations"),
 		filepath.Join(root, "commands"),
 		filepath.Join(root, "wake"),
+		filepath.Join(root, "chains"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {

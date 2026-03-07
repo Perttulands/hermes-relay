@@ -288,6 +288,15 @@ func (c *context) cmdSend(args []string) int {
 
 	broadcast := flagBool(args, "--broadcast")
 	wake := flagBool(args, "--wake")
+	noWake := flagBool(args, "--no-wake")
+	chainID := flags["chain-id"]
+	var maxDepth int
+	if md := flags["max-depth"]; md != "" {
+		fmt.Sscanf(md, "%d", &maxDepth)
+	}
+	if maxDepth <= 0 {
+		maxDepth = core.DefaultMaxDepth
+	}
 
 	var to, body string
 	if broadcast {
@@ -392,11 +401,60 @@ func (c *context) cmdSend(args []string) int {
 		}
 	}
 
-	if wake {
+	if wake && !noWake {
 		if c.store.IsThrottled() {
 			fmt.Fprintf(os.Stderr, "wake: suspended (city-wide throttle active)\n")
 			return 0
 		}
+
+		// Chain depth enforcement
+		if to != "" {
+			// Generate chain ID if not provided
+			if chainID == "" {
+				chainID = core.NewChainID()
+			}
+
+			chain, err := c.store.RecordHop(chainID, c.agent, to, maxDepth)
+			if err != nil {
+				errorf("chain: %v", err)
+				// best-effort: proceed without chain tracking
+			}
+
+			if chain != nil && chain.Depth > chain.MaxDepth {
+				// Depth exceeded: suspend chain, skip wake injection
+				chain.Suspended = true
+				if saveErr := c.store.SaveChain(chain); saveErr != nil {
+					errorf("chain: save suspended state: %v", saveErr)
+				}
+
+				// Warn to stderr
+				preview := body
+				if len(preview) > 80 {
+					preview = preview[:80]
+				}
+				fmt.Fprintf(os.Stderr, "wake: chain %s suspended at depth %d (max %d): %s\n",
+					chainID, chain.Depth, chain.MaxDepth, preview)
+
+				// Notify athena (no-wake to prevent recursion)
+				notifyBody := fmt.Sprintf("Chain %s suspended at depth %d: %s", chainID, chain.Depth, preview)
+				notifyMsg := core.Message{
+					ID:       core.NewULID(),
+					TS:       time.Now().UTC().Format(time.RFC3339),
+					From:     c.agent,
+					To:       "athena",
+					Subject:  fmt.Sprintf("Chain %s suspended", chainID),
+					Body:     notifyBody,
+					Priority: "high",
+					Tags:     []string{"chain-suspended"},
+				}
+				if sendErr := c.store.Send(notifyMsg); sendErr != nil {
+					errorf("chain: notify athena: %v", sendErr)
+				}
+
+				return 0
+			}
+		}
+
 		if to != "" {
 			// Try direct session injection via openclaw system event
 			meta, metaErr := c.store.ReadMeta(to)
@@ -412,7 +470,7 @@ func (c *context) cmdSend(args []string) int {
 				cmd := execCommand("openclaw", injArgs...)
 				if err := cmd.Run(); err == nil {
 					if !c.quiet {
-						fmt.Printf("wake: injected into %s session\n", to)
+						fmt.Printf("wake: injected into %s session (chain: %s)\n", to, chainID)
 					}
 					return 0
 				}
@@ -424,7 +482,7 @@ func (c *context) cmdSend(args []string) int {
 			cmd := execCommand("systemctl", "--user", "start", svcName)
 			if err := cmd.Run(); err == nil {
 				if !c.quiet {
-					fmt.Printf("wake: started %s\n", svcName)
+					fmt.Printf("wake: started %s (chain: %s)\n", svcName, chainID)
 				}
 			} else {
 				// best-effort: systemctl start failed, fall back to default wake (Athena gateway)
@@ -1472,6 +1530,8 @@ SEND FLAGS:
   --payload <json>   Structured JSON payload (type-specific)
   --broadcast        Send to all registered agents
   --wake             Wake target agent after sending
+  --chain-id <uuid>  Propagate an existing wake chain
+  --max-depth <n>    Maximum chain depth (default: 3)
 
 READ FLAGS:
   --from <agent>     Filter by sender
@@ -1511,7 +1571,7 @@ func parseFlags(args []string) map[string]string {
 		if strings.HasPrefix(args[i], "--") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
 			key := strings.TrimPrefix(args[i], "--")
 			// Skip boolean flags
-			if key == "broadcast" || key == "wake" || key == "check" || key == "force" ||
+			if key == "broadcast" || key == "wake" || key == "no-wake" || key == "check" || key == "force" ||
 				key == "shared" || key == "all" || key == "unread" || key == "mark-read" ||
 				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
 				key == "loop" || key == "wait" || key == "idle" ||
@@ -1539,7 +1599,7 @@ func flagBool(args []string, flag string) bool {
 func flagPositional(args []string) []string {
 	var pos []string
 	boolFlags := map[string]bool{
-		"--broadcast": true, "--wake": true, "--check": true, "--force": true,
+		"--broadcast": true, "--wake": true, "--no-wake": true, "--check": true, "--force": true,
 		"--shared": true, "--all": true, "--unread": true, "--mark-read": true,
 		"--dry-run": true, "--expired-only": true, "--expired": true, "--tail": true,
 		"--json": true, "--quiet": true, "--loop": true, "--wait": true, "--idle": true,
