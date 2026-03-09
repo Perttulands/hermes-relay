@@ -46,6 +46,9 @@ type AgentMeta struct {
 	Model        string `json:"model,omitempty"`
 	Task         string `json:"task,omitempty"`
 	Bead         string `json:"bead,omitempty"`
+	GatewayURL   string `json:"gateway_url,omitempty"`
+	GatewayToken string `json:"gateway_token,omitempty"`
+	SessionKey   string `json:"session_key,omitempty"`
 	RegisteredAt string `json:"registered_at"`
 }
 
@@ -80,6 +83,8 @@ type AgentCard struct {
 	CurrentTask  string   `json:"current_task,omitempty"` // bead ID if working
 	LastSeen     string   `json:"last_seen"`              // RFC3339 timestamp (replaces heartbeat)
 	RegisteredAt string   `json:"registered_at"`
+	BudgetLimit  int      `json:"budget_limit,omitempty"`  // 0 = use default (20)
+	CooldownSecs int     `json:"cooldown_secs,omitempty"` // 0 = use default (300)
 }
 
 // Agent statuses.

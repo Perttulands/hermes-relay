@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Perttulands/hermes-relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
 func setup(t *testing.T) (string, func()) {
@@ -24,6 +25,22 @@ func setup(t *testing.T) (string, func()) {
 	return dir, func() {
 		os.Setenv("RELAY_DIR", origDir)
 		os.Setenv("RELAY_AGENT", origAgent)
+	}
+}
+
+// setupAllowAllPolicy writes an allow-all activation policy for tests
+// that need wake to proceed without policy blocking.
+func setupAllowAllPolicy(t *testing.T, dir string) {
+	t.Helper()
+	s, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("setup allow-all policy: %v", err)
+	}
+	p := &store.ActivationPolicy{
+		Default: "allow",
+	}
+	if err := s.SavePolicy(p); err != nil {
+		t.Fatalf("setup allow-all policy: %v", err)
 	}
 }
 
