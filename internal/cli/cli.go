@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -1816,67 +1817,49 @@ func (c *context) cmdSpawn(args []string) int {
 		}
 	}
 
-	brBin := resolveBRBinary()
-	createCmd := execCommand(brBin, "create", title, "-t", "task")
-	// Run br in beads workspace, not target repo.
-	workspaceDir, usedFallback := resolveWorkspaceDir(beadsDir)
-	if workspaceDir == "" {
-		errorf("spawn: beads workspace required (set --beads-dir or ATHENA_WORKSPACE)")
-		return 1
+	runtimeName, runtimeWarning := mapSpawnAgentToRuntime(agentType)
+	if runtimeWarning != "" {
+		warnf("spawn: %s", runtimeWarning)
 	}
-	if usedFallback {
-		warnf("spawn: --beads-dir not set, falling back to %q (set --beads-dir to the intended project .beads directory)", workspaceDir)
+	if title != "" && title != prompt {
+		warnf("spawn: --title is ignored; work run uses the prompt as task identity")
 	}
-	createCmd.Dir = workspaceDir
-	createOut, err := createCmd.CombinedOutput()
-	if err != nil {
-		errorf("spawn: br create failed: %v (%s)", err, strings.TrimSpace(string(createOut)))
-		return 1
+	if beadsDir != "" {
+		warnf("spawn: --beads-dir is ignored; work run creates beads in the target repo context")
+	} else if ws := strings.TrimSpace(os.Getenv("ATHENA_WORKSPACE")); ws != "" {
+		warnf("spawn: ATHENA_WORKSPACE=%q is ignored; work run creates beads in the target repo context", ws)
 	}
-
-	beadID := extractSpawnBeadID(string(createOut))
-	if beadID == "" {
-		errorf("spawn: could not parse bead id from br output: %s", strings.TrimSpace(string(createOut)))
-		return 1
-	}
-
-	fmt.Printf("spawned %s\n", beadID)
-
-	dispatchScript, err := resolveDispatchScript()
-	if err != nil {
-		errorf("spawn: %v", err)
-		return 1
-	}
-
-	dispatchCmd := execCommand(dispatchScript, beadID, repo, agentType, prompt)
-	dispatchCmd.Env = append(os.Environ(), "DISPATCH_ENFORCE_PRD_LINT=false")
-	dispatchOut, err := dispatchCmd.CombinedOutput()
-	if err != nil {
-		errorf("spawn: dispatch failed: %v (%s)", err, strings.TrimSpace(string(dispatchOut)))
-		return 1
-	}
-
 	if wait {
-		result, waitErr := waitForSpawnResult(repo, beadID)
-		if waitErr != nil {
-			errorf("spawn: wait failed: %v", waitErr)
-			return 1
-		}
-		if strings.TrimSpace(result) != "" {
-			fmt.Println(result)
-		}
-		if notify != "" {
-			msg := fmt.Sprintf("Spawned task %s completed", beadID)
-			notifyCmd := execCommand("relay", "send", notify, msg)
-			notifyOut, notifyErr := notifyCmd.CombinedOutput()
-			if notifyErr != nil {
-				errorf("spawn: notify failed: %v (%s)", notifyErr, strings.TrimSpace(string(notifyOut)))
-				return 1
-			}
-		}
+		warnf("spawn: --wait is now compatibility-only; relay spawn already waits for work run to finish")
 	}
 
+	workArgs := []string{"run", prompt, "--repo", repo, "--runtime", runtimeName, "--citizen", c.agent}
+	if notify != "" {
+		workArgs = append(workArgs, "--notify", notify)
+	}
+
+	workCmd := execCommand(resolveWorkBinary(), workArgs...)
+	workCmd.Stdout = os.Stdout
+	workCmd.Stderr = os.Stderr
+	if err := workCmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		errorf("spawn: work run failed: %v", err)
+		return 1
+	}
 	return 0
+}
+
+func mapSpawnAgentToRuntime(agentType string) (string, string) {
+	switch agentType {
+	case "codex":
+		return "codex", ""
+	case "claude:opus", "claude:sonnet", "claude:haiku":
+		return "claude", fmt.Sprintf("--agent %s maps to work runtime claude; model-specific relay variants are not yet distinct work runtimes", agentType)
+	default:
+		return "", ""
+	}
 }
 
 func resolveBRBinary() string {
@@ -1888,6 +1871,17 @@ func resolveBRBinary() string {
 		}
 	} // best-effort: fall back to PATH lookup
 	return "br"
+}
+
+func resolveWorkBinary() string {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		candidate := filepath.Join(home, "go", "bin", "work")
+		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
+			return candidate
+		}
+	}
+	return "work"
 }
 
 func extractSpawnBeadID(output string) string {

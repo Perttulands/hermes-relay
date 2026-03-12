@@ -579,65 +579,39 @@ func TestSpawnSuccess(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
-	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
-	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DISPATCH_SCRIPT", dispatch)
-	t.Setenv("ATHENA_WORKSPACE", t.TempDir())
-
 	repo := t.TempDir()
 	var calls []string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, name+" "+strings.Join(args, " "))
-		switch filepath.Base(name) {
-		case "br":
-			return exec.Command("bash", "-lc", "echo '✓ Created issue: athena-xyz'")
-		default:
-			return exec.Command("bash", "-lc", "exit 0")
-		}
+		return exec.Command("bash", "-lc", "exit 0")
 	})
 
 	code := run("spawn", "--repo", repo, "--agent", "codex", "--prompt", "Implement feature X")
 	if code != 0 {
 		t.Fatalf("spawn failed with code %d", code)
 	}
-	if len(calls) < 2 {
-		t.Fatalf("expected br + dispatch calls, got %v", calls)
+	if len(calls) != 1 {
+		t.Fatalf("expected one work call, got %v", calls)
 	}
-	if !strings.Contains(calls[0], "create Implement feature X -t task") {
-		t.Fatalf("unexpected br call: %s", calls[0])
-	}
-	if !strings.Contains(calls[1], fmt.Sprintf("athena-xyz %s codex Implement feature X", repo)) {
-		t.Fatalf("unexpected dispatch call: %s", calls[1])
+	if !strings.Contains(calls[0], fmt.Sprintf("work run Implement feature X --repo %s --runtime codex --citizen codex", repo)) {
+		t.Fatalf("unexpected work call: %s", calls[0])
 	}
 }
 
-func TestSpawnUsesExplicitBeadsDir(t *testing.T) {
+func TestSpawnWarnsOnIgnoredBeadsDir(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
-	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
-	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DISPATCH_SCRIPT", dispatch)
-	t.Setenv("ATHENA_WORKSPACE", t.TempDir())
-
 	repo := t.TempDir()
 	beadsDir := t.TempDir()
-	pwdFile := filepath.Join(t.TempDir(), "br-pwd.txt")
+	var calls []string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
-		switch filepath.Base(name) {
-		case "br":
-			cmd := fmt.Sprintf("pwd > %q; echo '✓ Created issue: athena-explicit'", pwdFile)
-			return exec.Command("bash", "-lc", cmd)
-		default:
-			return exec.Command("bash", "-lc", "exit 0")
-		}
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return exec.Command("bash", "-lc", "exit 0")
 	})
 
-	code := run(
+	code, stderr := captureRunStderr(
+		t,
 		"spawn",
 		"--repo", repo,
 		"--agent", "codex",
@@ -647,39 +621,24 @@ func TestSpawnUsesExplicitBeadsDir(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("spawn failed with code %d", code)
 	}
-
-	data, err := os.ReadFile(pwdFile)
-	if err != nil {
-		t.Fatalf("read br working dir: %v", err)
+	if len(calls) != 1 || !strings.Contains(calls[0], "work run Use explicit beads dir") {
+		t.Fatalf("unexpected work call list: %v", calls)
 	}
-	if got := strings.TrimSpace(string(data)); got != beadsDir {
-		t.Fatalf("br ran in %q, want %q", got, beadsDir)
+	if !strings.Contains(stderr, "--beads-dir is ignored") {
+		t.Fatalf("expected ignored beads-dir warning, got %q", stderr)
 	}
 }
 
-func TestSpawnFallsBackToATHENAWorkspaceAndWarns(t *testing.T) {
+func TestSpawnWarnsOnIgnoredATHENAWorkspace(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
-
-	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
-	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DISPATCH_SCRIPT", dispatch)
 
 	workspace := t.TempDir()
 	t.Setenv("ATHENA_WORKSPACE", workspace)
 
 	repo := t.TempDir()
-	pwdFile := filepath.Join(t.TempDir(), "br-pwd.txt")
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
-		switch filepath.Base(name) {
-		case "br":
-			cmd := fmt.Sprintf("pwd > %q; echo '✓ Created issue: athena-fallback'", pwdFile)
-			return exec.Command("bash", "-lc", cmd)
-		default:
-			return exec.Command("bash", "-lc", "exit 0")
-		}
+		return exec.Command("bash", "-lc", "exit 0")
 	})
 
 	code, stderr := captureRunStderr(
@@ -692,87 +651,50 @@ func TestSpawnFallsBackToATHENAWorkspaceAndWarns(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("spawn failed with code %d", code)
 	}
-
-	data, err := os.ReadFile(pwdFile)
-	if err != nil {
-		t.Fatalf("read br working dir: %v", err)
-	}
-	if got := strings.TrimSpace(string(data)); got != workspace {
-		t.Fatalf("br ran in %q, want %q", got, workspace)
-	}
-	if !strings.Contains(stderr, "falling back to") || !strings.Contains(stderr, workspace) {
-		t.Fatalf("expected fallback warning mentioning workspace, got: %q", stderr)
+	if !strings.Contains(stderr, "ATHENA_WORKSPACE=") || !strings.Contains(stderr, workspace) {
+		t.Fatalf("expected ignored ATHENA_WORKSPACE warning, got: %q", stderr)
 	}
 }
 
-func TestSpawnFailsWithoutBeadsDirOrATHENAWorkspace(t *testing.T) {
+func TestSpawnDoesNotRequireLegacyWorkspaceFlags(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
-	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
-	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DISPATCH_SCRIPT", dispatch)
 	t.Setenv("ATHENA_WORKSPACE", "")
-	t.Setenv("HOME", t.TempDir())
 
-	code, stderr := captureRunStderr(
-		t,
+	var calls []string
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return exec.Command("bash", "-lc", "exit 0")
+	})
+
+	code := run(
 		"spawn",
 		"--repo", t.TempDir(),
 		"--agent", "codex",
 		"--prompt", "Missing workspace config",
 	)
-	if code != 1 {
-		t.Fatalf("spawn without beads workspace should fail with code 1, got %d", code)
+	if code != 0 {
+		t.Fatalf("spawn should not require legacy workspace flags, got %d", code)
 	}
-	if !strings.Contains(stderr, "set --beads-dir or ATHENA_WORKSPACE") {
-		t.Fatalf("expected explicit workspace error, got: %q", stderr)
+	if len(calls) != 1 || !strings.Contains(calls[0], "work run Missing workspace config") {
+		t.Fatalf("unexpected work call list: %v", calls)
 	}
 }
 
-func TestSpawnWaitAndNotify(t *testing.T) {
+func TestSpawnMapsNotifyAndLegacyWaitToWorkRun(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
-	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
-	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("DISPATCH_SCRIPT", dispatch)
-	t.Setenv("ATHENA_WORKSPACE", t.TempDir())
-
-	origPoll := spawnPollInterval
-	origTimeout := spawnPollTimeout
-	spawnPollInterval = 10 * time.Millisecond
-	spawnPollTimeout = 500 * time.Millisecond
-	t.Cleanup(func() {
-		spawnPollInterval = origPoll
-		spawnPollTimeout = origTimeout
-	})
-
 	repo := t.TempDir()
-	resultsDir := filepath.Join(repo, "state", "results")
-	if err := os.MkdirAll(resultsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	go func() {
-		time.Sleep(25 * time.Millisecond)
-		_ = os.WriteFile(filepath.Join(resultsDir, "athena-wait.json"), []byte(`{"ok":true}`), 0o644)
-	}()
-
 	var calls []string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, name+" "+strings.Join(args, " "))
-		if filepath.Base(name) == "br" {
-			return exec.Command("bash", "-lc", "echo '✓ Created issue: athena-wait'")
-		}
 		return exec.Command("bash", "-lc", "exit 0")
 	})
 
-	code := run(
+	code, stderr := captureRunStderr(
+		t,
 		"spawn",
 		"--repo", repo,
 		"--agent", "claude:opus",
@@ -783,16 +705,14 @@ func TestSpawnWaitAndNotify(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("spawn --wait --notify failed with code %d", code)
 	}
-
-	foundNotify := false
-	for _, c := range calls {
-		if strings.Contains(c, "relay send athena Spawned task athena-wait completed") {
-			foundNotify = true
-			break
-		}
+	if len(calls) != 1 {
+		t.Fatalf("expected one work call, got %v", calls)
 	}
-	if !foundNotify {
-		t.Fatalf("expected notify call, got %v", calls)
+	if !strings.Contains(calls[0], fmt.Sprintf("work run Design system Y --repo %s --runtime claude --citizen claude:opus --notify athena", repo)) {
+		t.Fatalf("unexpected work call: %s", calls[0])
+	}
+	if !strings.Contains(stderr, "--wait is now compatibility-only") {
+		t.Fatalf("expected wait compatibility warning, got %q", stderr)
 	}
 }
 

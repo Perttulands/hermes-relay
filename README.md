@@ -32,11 +32,11 @@ All tests pass. The CLI and Go client are functional and used daily in productio
 - ✅ Command queue (post and consume)
 - ✅ Garbage collection (expired reservations, stale agents, old commands)
 - ✅ Metrics, activation audit log, spend tracking
-- ✅ Task spawning via external `br` and dispatch tooling
+- ✅ Task spawning via `work run` wrapper compatibility path
 - ✅ Go client package (`pkg/client`) with Send, Read, Watch, Card operations
 - ✅ No daemon/service mode by design. Relay is filesystem-backed only; there is no `relay serve` command.
 - ⚠️ Wake via `openclaw` gateway depends on external services being present and configured
-- ⚠️ `spawn` depends on external `br` binary and a dispatch script at the resolved path
+- ⚠️ `spawn` depends on the external `work` binary being installed and runnable
 
 ---
 
@@ -336,17 +336,23 @@ Display activation log entries. Requires one of:
 
 ### `relay spawn [flags]`
 
-Create a task issue via `br`, dispatch a worker script, and optionally wait for a result and notify.
+Compatibility wrapper over `work run`. `relay` keeps the old flag surface for now, but execution authority lives in `work`.
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--repo <path>` | Yes | Target repository for result file lookup |
+| `--repo <path>` | Yes | Target repository passed through to `work run --repo` |
 | `--agent <type>` | Yes | Agent type: `codex`, `claude:opus`, `claude:sonnet`, `claude:haiku` |
-| `--prompt <text>` | Yes | Dispatch prompt |
-| `--title <text>` | No | Task title (defaults to prompt truncated to 50 runes) |
-| `--beads-dir <path>` | Recommended | Directory where `br create` runs (pass your project `.beads` path explicitly) |
-| `--wait` | No | Wait for `state/results/<bead>.json` up to 30 minutes |
-| `--notify <agent>` | No | Send relay message on completion |
+| `--prompt <text>` | Yes | Task text passed through to `work run` |
+| `--title <text>` | No | Deprecated; ignored because `work run` uses the prompt as task identity |
+| `--beads-dir <path>` | No | Deprecated; ignored because bead creation happens inside `work run` |
+| `--wait` | No | Compatibility-only; `relay spawn` already blocks on `work run` completion |
+| `--notify <agent>` | No | Passed through to `work run --notify` |
+
+Compatibility notes:
+
+- `codex` maps to `work --runtime codex`
+- `claude:opus`, `claude:sonnet`, and `claude:haiku` currently all map to `work --runtime claude`
+- `DISPATCH_SCRIPT` and `ATHENA_WORKSPACE` are retained only for legacy compatibility and are no longer used by `relay spawn`
 
 ---
 
@@ -370,9 +376,9 @@ Print usage text with command list.
 |----------|-------------|
 | `RELAY_DIR` | Relay root directory override |
 | `RELAY_AGENT` | Acting agent identity override |
-| `DISPATCH_SCRIPT` | Explicit dispatch script path for `spawn` |
-| `ATHENA_WORKSPACE` | Explicit fallback workspace path used by `spawn` for `br create` when `--beads-dir` is not provided |
-| `HOME` | Used for default relay dir expansion, wake gateway script lookup, BR binary lookup, dispatch/workspace fallback paths |
+| `DISPATCH_SCRIPT` | Legacy spawn variable; retained for compatibility but ignored by the `work run` wrapper path |
+| `ATHENA_WORKSPACE` | Legacy spawn variable; retained for compatibility but ignored by the `work run` wrapper path |
+| `HOME` | Used for default relay dir expansion, wake gateway script lookup, and work/binary fallback paths |
 
 ### On-Disk State Files
 
@@ -448,9 +454,9 @@ None. All relay operations are filesystem-based. No external services needed for
 |--------|---------|
 | `openclaw` | Direct gateway wake injection |
 | `systemctl` (user mode) | Fallback service wake |
-| `br` (or `~/.cargo/bin/br`) | Used by `spawn` and budget-exceeded wake branch |
+| `br` (or `~/.cargo/bin/br`) | Used by budget-exceeded wake branch |
+| `work` (or `~/go/bin/work`) | Used by `spawn` |
 | `~/.openclaw/workspace/scripts/wake-gateway.sh` | Wake gateway script (wake command and fallback) |
-| Dispatch script (`DISPATCH_SCRIPT` or `~/athena/workspace/scripts/dispatch.sh`) | Used by `spawn` |
 
 ### Go Module Dependencies
 
