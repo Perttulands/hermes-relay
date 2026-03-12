@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Perttulands/hermes-relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/runtimecfg"
 	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
@@ -430,7 +431,7 @@ func TestGetCardNonexistent(t *testing.T) {
 // --- resolveDir tests ---
 
 func TestResolveDirExplicit(t *testing.T) {
-	dir, err := resolveDir("/tmp/custom-relay")
+	dir, err := runtimecfg.ResolveDir("/tmp/custom-relay")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +442,7 @@ func TestResolveDirExplicit(t *testing.T) {
 
 func TestResolveDirFromEnv(t *testing.T) {
 	t.Setenv("RELAY_DIR", "/tmp/relay-env")
-	dir, err := resolveDir("")
+	dir, err := runtimecfg.ResolveDir("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +455,7 @@ func TestResolveDirDefaultHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("RELAY_DIR", "")
-	dir, err := resolveDir("")
+	dir, err := runtimecfg.ResolveDir("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +468,7 @@ func TestResolveDirDefaultHome(t *testing.T) {
 func TestResolveDirTildeAlone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	dir, err := resolveDir("~")
+	dir, err := runtimecfg.ResolveDir("~")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +480,7 @@ func TestResolveDirTildeAlone(t *testing.T) {
 func TestResolveDirTildePrefix(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	dir, err := resolveDir("~/my-relay")
+	dir, err := runtimecfg.ResolveDir("~/my-relay")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +494,7 @@ func TestResolveDirTildePrefix(t *testing.T) {
 
 func TestResolveAgentFromEnv(t *testing.T) {
 	t.Setenv("RELAY_AGENT", "custom-agent")
-	agent, err := resolveAgent()
+	agent, err := runtimecfg.ResolveAgent("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +505,7 @@ func TestResolveAgentFromEnv(t *testing.T) {
 
 func TestResolveAgentFallbackHostname(t *testing.T) {
 	t.Setenv("RELAY_AGENT", "")
-	agent, err := resolveAgent()
+	agent, err := runtimecfg.ResolveAgent("")
 	if err != nil {
 		t.Fatal(err)
 	}

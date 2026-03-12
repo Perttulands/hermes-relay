@@ -4,13 +4,12 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Perttulands/hermes-relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/runtimecfg"
 	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
@@ -47,7 +46,7 @@ type Client struct {
 // 1. RELAY_AGENT
 // 2. hostname
 func NewClient(dir string) (*Client, error) {
-	root, err := resolveDir(dir)
+	root, err := runtimecfg.ResolveDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve relay dir: %w", err)
 	}
@@ -57,7 +56,7 @@ func NewClient(dir string) (*Client, error) {
 		return nil, fmt.Errorf("init store: %w", err)
 	}
 
-	agent, err := resolveAgent()
+	agent, err := runtimecfg.ResolveAgent("")
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent: %w", err)
 	}
@@ -179,43 +178,4 @@ func (c *Client) GetCard(agent string) (core.AgentCard, error) {
 // ListCards returns cards for all registered agents that have one.
 func (c *Client) ListCards() ([]core.AgentCard, error) {
 	return c.store.ListCards()
-}
-
-func resolveDir(dir string) (string, error) {
-	if dir == "" {
-		dir = strings.TrimSpace(os.Getenv("RELAY_DIR"))
-	}
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		dir = filepath.Join(home, ".relay")
-	}
-	if dir == "~" || strings.HasPrefix(dir, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		if dir == "~" {
-			dir = home
-		} else {
-			dir = filepath.Join(home, strings.TrimPrefix(dir, "~/"))
-		}
-	}
-	return filepath.Clean(dir), nil
-}
-
-func resolveAgent() (string, error) {
-	if agent := os.Getenv("RELAY_AGENT"); agent != "" {
-		return agent, nil
-	}
-	agent, err := os.Hostname()
-	if err != nil {
-		return "", fmt.Errorf("resolve agent name: %w", err)
-	}
-	if strings.TrimSpace(agent) == "" {
-		return "", fmt.Errorf("resolve agent name: empty hostname")
-	}
-	return agent, nil
 }

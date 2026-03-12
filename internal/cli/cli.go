@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Perttulands/hermes-relay/internal/core"
+	"github.com/Perttulands/hermes-relay/internal/runtimecfg"
 	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
@@ -57,17 +58,10 @@ func Run(args []string) int {
 	}
 
 	// Initialize store
-	dir := globalFlags.dir
-	if dir == "" {
-		dir = strings.TrimSpace(os.Getenv("RELAY_DIR"))
-	}
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || strings.TrimSpace(home) == "" {
-			errorf("init: resolve home directory: %v", err)
-			return 1
-		}
-		dir = filepath.Join(home, ".relay")
+	dir, err := runtimecfg.ResolveDir(globalFlags.dir)
+	if err != nil {
+		errorf("init: %v", err)
+		return 1
 	}
 	s, err := store.New(dir)
 	if err != nil {
@@ -75,17 +69,10 @@ func Run(args []string) int {
 		return 1
 	}
 
-	agent := globalFlags.agent
-	if agent == "" {
-		agent = strings.TrimSpace(os.Getenv("RELAY_AGENT"))
-	}
-	if agent == "" {
-		host, err := os.Hostname()
-		if err != nil || strings.TrimSpace(host) == "" {
-			errorf("init: resolve hostname: %v", err)
-			return 1
-		}
-		agent = host
+	agent, err := runtimecfg.ResolveAgent(globalFlags.agent)
+	if err != nil {
+		errorf("init: %v", err)
+		return 1
 	}
 
 	ctx := &context{
