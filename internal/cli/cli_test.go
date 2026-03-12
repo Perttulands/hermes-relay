@@ -22,6 +22,17 @@ func setup(t *testing.T) (string, func()) {
 	origAgent := os.Getenv("RELAY_AGENT")
 	os.Setenv("RELAY_DIR", dir)
 	os.Setenv("RELAY_AGENT", "test-agent")
+
+	// Most CLI tests focus command behavior, not policy denial mechanics.
+	// Seed a permissive policy to avoid default-deny blocking unrelated tests.
+	s, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("setup store: %v", err)
+	}
+	if err := s.SavePolicy(&store.ActivationPolicy{Default: "allow"}); err != nil {
+		t.Fatalf("setup policy: %v", err)
+	}
+
 	return dir, func() {
 		os.Setenv("RELAY_DIR", origDir)
 		os.Setenv("RELAY_AGENT", origAgent)
@@ -602,6 +613,125 @@ func TestSpawnSuccess(t *testing.T) {
 	}
 }
 
+func TestSpawnUsesExplicitBeadsDir(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
+	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_SCRIPT", dispatch)
+	t.Setenv("ATHENA_WORKSPACE", t.TempDir())
+
+	repo := t.TempDir()
+	beadsDir := t.TempDir()
+	pwdFile := filepath.Join(t.TempDir(), "br-pwd.txt")
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		switch filepath.Base(name) {
+		case "br":
+			cmd := fmt.Sprintf("pwd > %q; echo '✓ Created issue: athena-explicit'", pwdFile)
+			return exec.Command("bash", "-lc", cmd)
+		default:
+			return exec.Command("bash", "-lc", "exit 0")
+		}
+	})
+
+	code := run(
+		"spawn",
+		"--repo", repo,
+		"--agent", "codex",
+		"--prompt", "Use explicit beads dir",
+		"--beads-dir", beadsDir,
+	)
+	if code != 0 {
+		t.Fatalf("spawn failed with code %d", code)
+	}
+
+	data, err := os.ReadFile(pwdFile)
+	if err != nil {
+		t.Fatalf("read br working dir: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != beadsDir {
+		t.Fatalf("br ran in %q, want %q", got, beadsDir)
+	}
+}
+
+func TestSpawnFallsBackToATHENAWorkspaceAndWarns(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
+	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_SCRIPT", dispatch)
+
+	workspace := t.TempDir()
+	t.Setenv("ATHENA_WORKSPACE", workspace)
+
+	repo := t.TempDir()
+	pwdFile := filepath.Join(t.TempDir(), "br-pwd.txt")
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		switch filepath.Base(name) {
+		case "br":
+			cmd := fmt.Sprintf("pwd > %q; echo '✓ Created issue: athena-fallback'", pwdFile)
+			return exec.Command("bash", "-lc", cmd)
+		default:
+			return exec.Command("bash", "-lc", "exit 0")
+		}
+	})
+
+	code, stderr := captureRunStderr(
+		t,
+		"spawn",
+		"--repo", repo,
+		"--agent", "codex",
+		"--prompt", "Use fallback workspace",
+	)
+	if code != 0 {
+		t.Fatalf("spawn failed with code %d", code)
+	}
+
+	data, err := os.ReadFile(pwdFile)
+	if err != nil {
+		t.Fatalf("read br working dir: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != workspace {
+		t.Fatalf("br ran in %q, want %q", got, workspace)
+	}
+	if !strings.Contains(stderr, "falling back to") || !strings.Contains(stderr, workspace) {
+		t.Fatalf("expected fallback warning mentioning workspace, got: %q", stderr)
+	}
+}
+
+func TestSpawnFailsWithoutBeadsDirOrATHENAWorkspace(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	dispatch := filepath.Join(t.TempDir(), "dispatch.sh")
+	if err := os.WriteFile(dispatch, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISPATCH_SCRIPT", dispatch)
+	t.Setenv("ATHENA_WORKSPACE", "")
+	t.Setenv("HOME", t.TempDir())
+
+	code, stderr := captureRunStderr(
+		t,
+		"spawn",
+		"--repo", t.TempDir(),
+		"--agent", "codex",
+		"--prompt", "Missing workspace config",
+	)
+	if code != 1 {
+		t.Fatalf("spawn without beads workspace should fail with code 1, got %d", code)
+	}
+	if !strings.Contains(stderr, "set --beads-dir or ATHENA_WORKSPACE") {
+		t.Fatalf("expected explicit workspace error, got: %q", stderr)
+	}
+}
+
 func TestSpawnWaitAndNotify(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
@@ -663,6 +793,19 @@ func TestSpawnWaitAndNotify(t *testing.T) {
 	}
 	if !foundNotify {
 		t.Fatalf("expected notify call, got %v", calls)
+	}
+}
+
+func TestResolveWorkspaceDirRequiresExplicitOrEnvWorkspace(t *testing.T) {
+	t.Setenv("ATHENA_WORKSPACE", "")
+	t.Setenv("HOME", t.TempDir())
+
+	got, usedFallback := resolveWorkspaceDir("")
+	if got != "" {
+		t.Fatalf("resolveWorkspaceDir() = %q, want empty", got)
+	}
+	if !usedFallback {
+		t.Fatal("expected fallback marker when no explicit or env workspace is set")
 	}
 }
 

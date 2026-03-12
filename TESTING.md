@@ -47,7 +47,7 @@ Hard to break message delivery, reservation conflicts, broadcast exclusion, conc
 
 **Low-priority gaps:**
 - `cmd/relay/main.go` at 0% — uncoverable without integration testing the `main()` entry point.
-- `resolveDispatchScript` / `resolveWorkspaceDir` at 25% — depend on filesystem state (`~/athena/workspace`, `DISPATCH_SCRIPT`).
+- `resolveDispatchScript` / `resolveWorkspaceDir` still depend on explicit environment configuration (`DISPATCH_SCRIPT`, `ATHENA_WORKSPACE`).
 
 ## Changelog
 

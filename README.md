@@ -344,7 +344,7 @@ Create a task issue via `br`, dispatch a worker script, and optionally wait for 
 | `--agent <type>` | Yes | Agent type: `codex`, `claude:opus`, `claude:sonnet`, `claude:haiku` |
 | `--prompt <text>` | Yes | Dispatch prompt |
 | `--title <text>` | No | Task title (defaults to prompt truncated to 50 runes) |
-| `--beads-dir <path>` | No (recommended) | Directory where `br create` runs (pass your project `.beads` path explicitly) |
+| `--beads-dir <path>` | Recommended | Directory where `br create` runs (pass your project `.beads` path explicitly) |
 | `--wait` | No | Wait for `state/results/<bead>.json` up to 30 minutes |
 | `--notify <agent>` | No | Send relay message on completion |
 
@@ -371,7 +371,7 @@ Print usage text with command list.
 | `RELAY_DIR` | Relay root directory override |
 | `RELAY_AGENT` | Acting agent identity override |
 | `DISPATCH_SCRIPT` | Explicit dispatch script path for `spawn` |
-| `ATHENA_WORKSPACE` | Fallback workspace path used by `spawn` for `br create` when `--beads-dir` is not provided |
+| `ATHENA_WORKSPACE` | Explicit fallback workspace path used by `spawn` for `br create` when `--beads-dir` is not provided |
 | `HOME` | Used for default relay dir expansion, wake gateway script lookup, BR binary lookup, dispatch/workspace fallback paths |
 
 ### On-Disk State Files

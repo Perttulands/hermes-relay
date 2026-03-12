@@ -357,6 +357,29 @@ func (c *context) cmdSend(args []string) int {
 	msgType := flags["type"]
 	payload := flags["payload"]
 
+	policy, policyErr := c.store.LoadPolicy()
+	if policyErr != nil {
+		errorf("policy: %v", policyErr)
+		return 1
+	}
+	senderTrustLevel := 0
+	if policy != nil {
+		senderTrustLevel = policy.TrustLevelForAgent(c.agent)
+	}
+	if c.store.IsExternalPaused() && senderTrustLevel < 4 {
+		if wake && !noWake && to != "" {
+			_ = c.store.QueuePendingExternalWake(store.PendingExternalWake{
+				TS:         time.Now().UTC().Format(time.RFC3339),
+				From:       c.agent,
+				To:         to,
+				TrustLevel: senderTrustLevel,
+				ID:         core.NewULID(),
+			})
+		}
+		errorf("send: external sends are paused (trust_level %d < 4)", senderTrustLevel)
+		return 1
+	}
+
 	if broadcast {
 		agents, err := c.store.ListAgents()
 		if err != nil {
@@ -364,8 +387,14 @@ func (c *context) cmdSend(args []string) int {
 			return 1
 		}
 		count := 0
+		denied := 0
 		for _, name := range agents {
 			if name == c.agent {
+				continue
+			}
+			if policy != nil && !policy.IsAllowed(c.agent, name) {
+				errorf("send: unauthorized by activation policy (%s -> %s not in allow list)", c.agent, name)
+				denied++
 				continue
 			}
 			msg := core.Message{
@@ -388,13 +417,21 @@ func (c *context) cmdSend(args []string) int {
 			if err := c.store.Send(msg); err != nil {
 				errorf("send to %s: %v", name, err)
 			} else {
+				c.logHarbourRelaySend(name, msg.ID, senderTrustLevel)
 				count++
 			}
 		}
 		if !c.quiet {
 			fmt.Printf("broadcast to %d agents\n", count)
 		}
+		if denied > 0 {
+			return 1
+		}
 	} else {
+		if policy != nil && !policy.IsAllowed(c.agent, to) {
+			errorf("send: unauthorized by activation policy (%s -> %s not in allow list)", c.agent, to)
+			return 1
+		}
 		msg := core.Message{
 			ID:       core.NewULID(),
 			TS:       time.Now().UTC().Format(time.RFC3339),
@@ -416,6 +453,7 @@ func (c *context) cmdSend(args []string) int {
 			errorf("send: %v", err)
 			return 1
 		}
+		c.logHarbourRelaySend(to, msg.ID, senderTrustLevel)
 		if c.json {
 			outputJSON(msg)
 		} else if !c.quiet {
@@ -1318,12 +1356,14 @@ func (c *context) cmdCard(args []string) int {
 
 func (c *context) cmdThrottle(args []string) int {
 	suspendAll := flagBool(args, "--suspend-all")
+	pauseExternal := flagBool(args, "--pause-external")
+	killExternal := flagBool(args, "--kill-external")
 	resume := flagBool(args, "--resume")
 	status := flagBool(args, "--status")
 	setBudget := flagBool(args, "--set-budget")
 
-	if !suspendAll && !resume && !status && !setBudget {
-		errorf("usage: relay throttle --suspend-all | --resume | --status | --set-budget <agent> <N>")
+	if !suspendAll && !pauseExternal && !killExternal && !resume && !status && !setBudget {
+		errorf("usage: relay throttle --suspend-all | --pause-external | --kill-external | --resume | --status | --set-budget <agent> <N>")
 		return 1
 	}
 
@@ -1338,8 +1378,37 @@ func (c *context) cmdThrottle(args []string) int {
 		return 0
 	}
 
+	if pauseExternal {
+		if err := c.store.SetExternalPaused(true, c.agent); err != nil {
+			errorf("throttle: %v", err)
+			return 1
+		}
+		c.logHarbourControlEvent("pause_external", "external", c.currentAgentTrustLevel())
+		if !c.quiet {
+			fmt.Println("throttle: external sends paused (trust_level < 4)")
+		}
+		return 0
+	}
+
+	if killExternal {
+		dropped, err := c.store.DropPendingExternalWakes()
+		if err != nil {
+			errorf("throttle: %v", err)
+			return 1
+		}
+		c.logHarbourControlEvent("kill_external", "external", c.currentAgentTrustLevel())
+		if !c.quiet {
+			fmt.Printf("throttle: dropped %d pending external wake(s)\n", dropped)
+		}
+		return 0
+	}
+
 	if resume {
 		if err := c.store.SetThrottled(false, ""); err != nil {
+			errorf("throttle: %v", err)
+			return 1
+		}
+		if err := c.store.SetExternalPaused(false, ""); err != nil {
 			errorf("throttle: %v", err)
 			return 1
 		}
@@ -1393,6 +1462,22 @@ func (c *context) cmdThrottle(args []string) int {
 		fmt.Printf("THROTTLE: SUSPENDED%s%s\n", by, at)
 	} else {
 		fmt.Println("THROTTLE: normal operation")
+	}
+	if state.PauseExternal {
+		at := ""
+		if state.PauseExternalAt != nil {
+			at = " at " + *state.PauseExternalAt
+		}
+		by := ""
+		if state.PauseExternalBy != "" {
+			by = " by " + state.PauseExternalBy
+		}
+		fmt.Printf("EXTERNAL: PAUSED%s%s\n", by, at)
+	} else {
+		fmt.Println("EXTERNAL: normal operation")
+	}
+	if len(state.PendingExternalWakes) > 0 {
+		fmt.Printf("PENDING EXTERNAL WAKES: %d\n", len(state.PendingExternalWakes))
 	}
 	if len(state.Budgets) > 0 {
 		fmt.Println("BUDGETS:")
@@ -1513,6 +1598,52 @@ func logActivation(s *store.Dir, sender, target, chainID string, depth int, outc
 		entry.GatewayURL = meta.GatewayURL
 	}
 	_ = s.AppendActivationLog(entry) // best-effort
+}
+
+func (c *context) logHarbourRelaySend(to, messageID string, trustLevel int) {
+	// Native city agents are inside the harbour boundary and are not logged here.
+	if trustLevel >= 4 {
+		return
+	}
+	if trustLevel < 0 {
+		trustLevel = 0
+	}
+	entry := store.HarbourAuditEntry{
+		TS:         time.Now().UTC().Format(time.RFC3339),
+		From:       c.agent,
+		To:         to,
+		Action:     "relay_send",
+		TrustLevel: trustLevel,
+		ID:         messageID,
+	}
+	_ = c.store.AppendHarbourAuditLog(entry) // best-effort
+}
+
+func (c *context) currentAgentTrustLevel() int {
+	policy, err := c.store.LoadPolicy()
+	if err != nil || policy == nil {
+		return 0
+	}
+	level := policy.TrustLevelForAgent(c.agent)
+	if level < 0 {
+		return 0
+	}
+	return level
+}
+
+func (c *context) logHarbourControlEvent(action, to string, trustLevel int) {
+	if trustLevel < 0 {
+		trustLevel = 0
+	}
+	entry := store.HarbourAuditEntry{
+		TS:         time.Now().UTC().Format(time.RFC3339),
+		From:       c.agent,
+		To:         to,
+		Action:     action,
+		TrustLevel: trustLevel,
+		ID:         core.NewULID(),
+	}
+	_ = c.store.AppendHarbourAuditLog(entry) // best-effort
 }
 
 func (c *context) cmdSpend(args []string) int {
@@ -1678,11 +1809,12 @@ func (c *context) cmdSpawn(args []string) int {
 	}
 	prompt := strings.TrimSpace(flags["prompt"])
 	title := strings.TrimSpace(flags["title"])
+	beadsDir := strings.TrimSpace(flags["beads-dir"])
 	wait := flagBool(args, "--wait")
 	notify := strings.TrimSpace(flags["notify"])
 
 	if repo == "" || agentType == "" || prompt == "" {
-		errorf("usage: relay spawn --repo <path> --agent <type> --prompt <text> [--title <text>] [--wait] [--notify <agent>]")
+		errorf("usage: relay spawn --repo <path> --agent <type> --prompt <text> [--title <text>] [--beads-dir <path>] [--wait] [--notify <agent>]")
 		return 1
 	}
 	if !validSpawnAgentSet[agentType] {
@@ -1699,8 +1831,15 @@ func (c *context) cmdSpawn(args []string) int {
 
 	brBin := resolveBRBinary()
 	createCmd := execCommand(brBin, "create", title, "-t", "task")
-	// Run br in workspace (where beads DB lives), not target repo
-	workspaceDir := resolveWorkspaceDir()
+	// Run br in beads workspace, not target repo.
+	workspaceDir, usedFallback := resolveWorkspaceDir(beadsDir)
+	if workspaceDir == "" {
+		errorf("spawn: beads workspace required (set --beads-dir or ATHENA_WORKSPACE)")
+		return 1
+	}
+	if usedFallback {
+		warnf("spawn: --beads-dir not set, falling back to %q (set --beads-dir to the intended project .beads directory)", workspaceDir)
+	}
 	createCmd.Dir = workspaceDir
 	createOut, err := createCmd.CombinedOutput()
 	if err != nil {
@@ -1797,19 +1936,14 @@ func resolveDispatchScript() (string, error) {
 	return "", fmt.Errorf("dispatch script not found (set DISPATCH_SCRIPT)")
 }
 
-func resolveWorkspaceDir() string {
+func resolveWorkspaceDir(explicit string) (string, bool) {
+	if dir := strings.TrimSpace(explicit); dir != "" {
+		return dir, false
+	}
 	if ws := strings.TrimSpace(os.Getenv("ATHENA_WORKSPACE")); ws != "" {
-		return ws
+		return ws, true
 	}
-	home, err := os.UserHomeDir()
-	if err == nil {
-		candidate := filepath.Join(home, "athena", "workspace")
-		if st, statErr := os.Stat(candidate); statErr == nil && st.IsDir() {
-			return candidate
-		}
-	}
-	// best-effort: workspace not found, use cwd
-	return "."
+	return "", true
 }
 
 func waitForSpawnResult(repo, beadID string) (string, error) {
@@ -1878,6 +2012,14 @@ LOG FLAGS:
   --chain <id>         Show full chain trace
   --tail [N]           Show last N activations (default: 20)
 
+THROTTLE FLAGS:
+  --suspend-all        Suspend all autonomous wakes city-wide
+  --pause-external     Pause sends from agents with trust_level < 4
+  --kill-external      Drop pending external wake queue entries
+  --resume             Resume normal operation
+  --status             Show throttle and external pause status
+  --set-budget <a> <N> Set per-agent wake budget
+
 READ FLAGS:
   --from <agent>     Filter by sender
   --thread <id>      Filter by thread
@@ -1903,6 +2045,10 @@ func errorf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "relay: "+format+"\n", args...)
 }
 
+func warnf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "relay: warning: "+format+"\n", args...)
+}
+
 func outputJSON(v any) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -1920,7 +2066,7 @@ func parseFlags(args []string) map[string]string {
 				key == "shared" || key == "all" || key == "unread" || key == "mark-read" ||
 				key == "dry-run" || key == "expired-only" || key == "expired" || key == "tail" ||
 				key == "loop" || key == "wait" || key == "idle" ||
-				key == "suspend-all" || key == "resume" || key == "status" || key == "set-budget" ||
+				key == "suspend-all" || key == "pause-external" || key == "kill-external" || key == "resume" || key == "status" || key == "set-budget" ||
 				key == "show" || key == "allow" || key == "deny" || key == "reset" ||
 				key == "today" || key == "week" {
 				continue
@@ -1950,7 +2096,7 @@ func flagPositional(args []string) []string {
 		"--shared": true, "--all": true, "--unread": true, "--mark-read": true,
 		"--dry-run": true, "--expired-only": true, "--expired": true, "--tail": true,
 		"--json": true, "--quiet": true, "--loop": true, "--wait": true, "--idle": true,
-		"--suspend-all": true, "--resume": true, "--status": true, "--set-budget": true,
+		"--suspend-all": true, "--pause-external": true, "--kill-external": true, "--resume": true, "--status": true, "--set-budget": true,
 		"--show": true, "--allow": true, "--deny": true, "--reset": true,
 		"--today": true, "--week": true,
 	}
