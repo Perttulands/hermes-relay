@@ -34,7 +34,7 @@ All tests pass. The CLI and Go client are functional and used daily in productio
 - ✅ Metrics, activation audit log, spend tracking
 - ✅ Task spawning via external `br` and dispatch tooling
 - ✅ Go client package (`pkg/client`) with Send, Read, Watch, Card operations
-- ⚠️ `relay serve` (HTTP server on `:9292`) is referenced in `deployment/relay.service` but **does not exist** in the current binary. All coordination is filesystem-based only.
+- ✅ No daemon/service mode by design. Relay is filesystem-backed only; there is no `relay serve` command.
 - ⚠️ Wake via `openclaw` gateway depends on external services being present and configured
 - ⚠️ `spawn` depends on external `br` binary and a dispatch script at the resolved path
 
@@ -344,6 +344,7 @@ Create a task issue via `br`, dispatch a worker script, and optionally wait for 
 | `--agent <type>` | Yes | Agent type: `codex`, `claude:opus`, `claude:sonnet`, `claude:haiku` |
 | `--prompt <text>` | Yes | Dispatch prompt |
 | `--title <text>` | No | Task title (defaults to prompt truncated to 50 runes) |
+| `--beads-dir <path>` | No (recommended) | Directory where `br create` runs (pass your project `.beads` path explicitly) |
 | `--wait` | No | Wait for `state/results/<bead>.json` up to 30 minutes |
 | `--notify <agent>` | No | Send relay message on completion |
 
@@ -370,9 +371,8 @@ Print usage text with command list.
 | `RELAY_DIR` | Relay root directory override |
 | `RELAY_AGENT` | Acting agent identity override |
 | `DISPATCH_SCRIPT` | Explicit dispatch script path for `spawn` |
-| `ATHENA_WORKSPACE` | Workspace path used by `spawn` for running `br create` |
+| `ATHENA_WORKSPACE` | Fallback workspace path used by `spawn` for `br create` when `--beads-dir` is not provided |
 | `HOME` | Used for default relay dir expansion, wake gateway script lookup, BR binary lookup, dispatch/workspace fallback paths |
-| `XDG_CONFIG_HOME` | Used by `install-service.sh` for systemd user-unit installation path |
 
 ### On-Disk State Files
 
