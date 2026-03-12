@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/Perttulands/hermes-relay/internal/core"
@@ -9,8 +10,8 @@ import (
 func TestLoadChainNotFound(t *testing.T) {
 	d := tempDir(t)
 	chain, err := d.LoadChain("nonexistent-id")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrChainNotFound) {
+		t.Fatalf("expected ErrChainNotFound, got: %v", err)
 	}
 	if chain != nil {
 		t.Fatalf("expected nil for missing chain, got %+v", chain)

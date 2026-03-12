@@ -142,3 +142,76 @@ func TestThrottleJSONShape(t *testing.T) {
 		t.Errorf("expected hermes=10, got %v", budgets["hermes"])
 	}
 }
+
+func TestSetExternalPausedAndIsExternalPaused(t *testing.T) {
+	d := tempDir(t)
+
+	if err := d.SetExternalPaused(true, "athena"); err != nil {
+		t.Fatal(err)
+	}
+	if !d.IsExternalPaused() {
+		t.Fatal("expected external pause active")
+	}
+
+	state, err := d.GetThrottleState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.PauseExternal {
+		t.Error("expected pause_external=true")
+	}
+	if state.PauseExternalBy != "athena" {
+		t.Errorf("expected pause_external_by=athena, got %s", state.PauseExternalBy)
+	}
+	if state.PauseExternalAt == nil {
+		t.Error("expected pause_external_at to be set")
+	}
+
+	if err := d.SetExternalPaused(false, ""); err != nil {
+		t.Fatal(err)
+	}
+	state, err = d.GetThrottleState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PauseExternal {
+		t.Error("expected pause_external=false after resume")
+	}
+	if state.PauseExternalAt != nil {
+		t.Error("expected pause_external_at=nil after resume")
+	}
+}
+
+func TestQueueAndDropPendingExternalWakes(t *testing.T) {
+	d := tempDir(t)
+
+	if err := d.QueuePendingExternalWake(PendingExternalWake{
+		TS: "2026-03-08T18:00:00Z", From: "codex", To: "athena", TrustLevel: 1, ID: "a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueuePendingExternalWake(PendingExternalWake{
+		TS: "2026-03-08T18:00:01Z", From: "hestia", To: "athena", TrustLevel: 4, ID: "b",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dropped, err := d.DropPendingExternalWakes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped != 1 {
+		t.Fatalf("expected 1 dropped wake, got %d", dropped)
+	}
+
+	state, err := d.GetThrottleState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.PendingExternalWakes) != 1 {
+		t.Fatalf("expected 1 pending wake kept, got %d", len(state.PendingExternalWakes))
+	}
+	if state.PendingExternalWakes[0].ID != "b" {
+		t.Fatalf("expected native wake to remain, got %+v", state.PendingExternalWakes[0])
+	}
+}

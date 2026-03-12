@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,9 @@ import (
 
 	"github.com/Perttulands/hermes-relay/internal/core"
 )
+
+// ErrChainNotFound indicates the requested chain state file is absent.
+var ErrChainNotFound = errors.New("chain not found")
 
 // chainsDir returns the path to the chains directory.
 func (d *Dir) chainsDir() string {
@@ -20,12 +24,12 @@ func (d *Dir) chainPath(id string) string {
 	return filepath.Join(d.chainsDir(), id+".json")
 }
 
-// LoadChain reads a chain state from disk. Returns nil, nil if not found (new chain).
+// LoadChain reads a chain state from disk.
 func (d *Dir) LoadChain(id string) (*core.ChainState, error) {
 	data, err := os.ReadFile(d.chainPath(id))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, ErrChainNotFound
 		}
 		return nil, fmt.Errorf("read chain %s: %w", id, err)
 	}
@@ -56,8 +60,11 @@ func (d *Dir) RecordHop(chainID, from, to string, maxDepth int) (*core.ChainStat
 	lockPath := d.chainPath(chainID) + ".lock"
 
 	state, err := d.LoadChain(chainID)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrChainNotFound) {
 		return nil, fmt.Errorf("record hop: %w", err)
+	}
+	if errors.Is(err, ErrChainNotFound) {
+		state = nil
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)

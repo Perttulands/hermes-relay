@@ -27,6 +27,14 @@ func buildRelay(t *testing.T) string {
 	return bin
 }
 
+func seedAllowAllPolicy(t *testing.T, dir string) {
+	t.Helper()
+	policyPath := filepath.Join(dir, "activation-policy.toml")
+	if err := os.WriteFile(policyPath, []byte("default = \"allow\"\n"), 0o644); err != nil {
+		t.Fatalf("write activation policy: %v", err)
+	}
+}
+
 // runRelay executes the relay binary with the given args and env overrides.
 // Returns stdout, stderr, and exit code.
 func runRelay(t *testing.T, bin string, env map[string]string, args ...string) (string, string, int) {
@@ -83,6 +91,7 @@ func TestE2E_VersionExitsCleanly(t *testing.T) {
 func TestE2E_SendAndRead(t *testing.T) {
 	bin := buildRelay(t)
 	dir := t.TempDir()
+	seedAllowAllPolicy(t, dir)
 	env := map[string]string{"RELAY_DIR": dir}
 
 	// Register two agents
@@ -186,6 +195,7 @@ func TestE2E_RegisterAndStatus(t *testing.T) {
 func TestE2E_Metrics(t *testing.T) {
 	bin := buildRelay(t)
 	dir := t.TempDir()
+	seedAllowAllPolicy(t, dir)
 	env := map[string]string{"RELAY_DIR": dir, "RELAY_AGENT": "metrics-agent"}
 
 	runRelay(t, bin, env, "register", "metrics-agent")
@@ -239,6 +249,7 @@ func TestE2E_ReserveAndRelease(t *testing.T) {
 func TestE2E_BroadcastMessage(t *testing.T) {
 	bin := buildRelay(t)
 	dir := t.TempDir()
+	seedAllowAllPolicy(t, dir)
 	env := map[string]string{"RELAY_DIR": dir}
 
 	// Register 3 agents
@@ -297,6 +308,7 @@ func TestE2E_FullAgentWorkflow(t *testing.T) {
 	bin := buildRelay(t)
 	dir := t.TempDir()
 	repo := t.TempDir()
+	seedAllowAllPolicy(t, dir)
 	env := map[string]string{"RELAY_DIR": dir}
 
 	// Register agents with different roles

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +13,34 @@ import (
 	"github.com/Perttulands/hermes-relay/internal/store"
 )
 
+func captureRunStderr(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+
+	full := append([]string{"relay"}, args...)
+	code := Run(full)
+
+	w.Close()
+	os.Stderr = old
+
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, string(data)
+}
+
 func TestPolicyShowEmpty(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
+	if err := os.Remove(filepath.Join(dir, "activation-policy.toml")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 
 	code, out := captureRun(t, "policy", "--show")
 	if code != 0 {
@@ -156,9 +182,12 @@ func TestSendWakeDeniedByPolicy(t *testing.T) {
 		return exec.Command("true")
 	})
 
-	code := run("send", "target", "hello policy", "--wake")
-	if code != 0 {
-		t.Fatalf("send --wake failed with code %d", code)
+	code, stderr := captureRunStderr(t, "send", "target", "hello policy", "--wake")
+	if code != 1 {
+		t.Fatalf("send --wake should fail with code 1 when denied, got %d", code)
+	}
+	if !strings.Contains(stderr, "unauthorized by activation policy") {
+		t.Fatalf("expected clear policy denial message, got: %q", stderr)
 	}
 
 	// Should NOT have called openclaw (policy denied)
@@ -168,13 +197,16 @@ func TestSendWakeDeniedByPolicy(t *testing.T) {
 		}
 	}
 
-	// Message should still be delivered to inbox
+	// Message should NOT be delivered to inbox
 	data, err := os.ReadFile(filepath.Join(dir, "agents", "target", "inbox.jsonl"))
 	if err != nil {
-		t.Fatal("inbox should exist")
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "hello policy") {
-		t.Error("message should still be in inbox despite policy denial")
+	if strings.Contains(string(data), "hello policy") {
+		t.Error("message should not be delivered when send is denied by policy")
 	}
 }
 
@@ -220,11 +252,14 @@ func TestSendWakeAllowedByPolicy(t *testing.T) {
 }
 
 func TestSendWakeNoPolicyFileDefaultDeny(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
 
 	run("register", "target", "--gateway-url", "ws://localhost:4000/")
 	run("register", "test-agent")
+	if err := os.Remove(filepath.Join(dir, "activation-policy.toml")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 
 	// No policy file — should default to deny
 	var calls []string
@@ -233,9 +268,12 @@ func TestSendWakeNoPolicyFileDefaultDeny(t *testing.T) {
 		return exec.Command("true")
 	})
 
-	code := run("send", "target", "no policy file", "--wake")
-	if code != 0 {
-		t.Fatalf("send --wake failed with code %d", code)
+	code, stderr := captureRunStderr(t, "send", "target", "no policy file", "--wake")
+	if code != 1 {
+		t.Fatalf("send --wake should fail with default deny when no policy file, got %d", code)
+	}
+	if !strings.Contains(stderr, "unauthorized by activation policy") {
+		t.Fatalf("expected clear policy denial message, got: %q", stderr)
 	}
 
 	// Should NOT have called openclaw (default deny)
@@ -243,6 +281,39 @@ func TestSendWakeNoPolicyFileDefaultDeny(t *testing.T) {
 		if strings.Contains(c, "openclaw system event") {
 			t.Errorf("should not call openclaw with default deny (no policy file), got: %s", c)
 		}
+	}
+}
+
+func TestSendDeniedByPolicyWithoutWake(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "target")
+	run("register", "test-agent")
+
+	s, _ := store.New(dir)
+	policy := store.DefaultPolicy()
+	if err := s.SavePolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stderr := captureRunStderr(t, "send", "target", "plain send denied")
+	if code != 1 {
+		t.Fatalf("send should fail with code 1 when denied, got %d", code)
+	}
+	if !strings.Contains(stderr, "unauthorized by activation policy") {
+		t.Fatalf("expected clear policy denial message, got: %q", stderr)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "target", "inbox.jsonl"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "plain send denied") {
+		t.Error("message should not be written when send is denied by policy")
 	}
 }
 

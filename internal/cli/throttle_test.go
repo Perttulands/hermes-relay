@@ -198,3 +198,133 @@ func TestSendWakeWorksWhenNotThrottled(t *testing.T) {
 		t.Error("expected wake exec calls when not throttled")
 	}
 }
+
+func TestThrottlePauseExternal(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	code := run("throttle", "--pause-external")
+	if code != 0 {
+		t.Fatalf("throttle --pause-external failed with code %d", code)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "throttle.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state store.ThrottleState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if !state.PauseExternal {
+		t.Fatal("expected pause_external=true")
+	}
+
+	auditData, err := os.ReadFile(filepath.Join(dir, "harbour-audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(auditData), "\"action\":\"pause_external\"") {
+		t.Fatalf("expected harbour audit pause event, got: %q", string(auditData))
+	}
+}
+
+func TestSendRejectedWhenExternalPaused(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent")
+	run("register", "target")
+	run("throttle", "--pause-external")
+
+	code, stderr := captureRunStderr(t, "send", "target", "blocked by pause")
+	if code != 1 {
+		t.Fatalf("expected send failure when external paused, got %d", code)
+	}
+	if !strings.Contains(stderr, "external sends are paused") {
+		t.Fatalf("expected pause error message, got: %q", stderr)
+	}
+}
+
+func TestSendAllowedWhenExternalPausedForTrustLevelFour(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent")
+	run("register", "target")
+
+	s, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePolicy(&store.ActivationPolicy{
+		Default: "deny",
+		Allow: []store.PolicyRule{
+			{From: "test-agent", To: "target", TrustLevel: 4},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run("throttle", "--pause-external")
+	code := run("send", "target", "native allowed")
+	if code != 0 {
+		t.Fatalf("expected trust_level=4 send allowed during pause, got %d", code)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "target", "inbox.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "native allowed") {
+		t.Fatalf("expected message delivered for trust_level=4 sender, got: %q", string(data))
+	}
+}
+
+func TestThrottleKillExternalDropsPendingWakes(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	run("register", "test-agent")
+	run("register", "target")
+	run("throttle", "--pause-external")
+
+	// Queue one pending external wake.
+	code := run("send", "target", "pending wake", "--wake")
+	if code != 1 {
+		t.Fatalf("expected paused external wake to be rejected/queued, got %d", code)
+	}
+
+	s, err := store.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBefore, err := s.GetThrottleState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stateBefore.PendingExternalWakes) == 0 {
+		t.Fatal("expected pending external wake before kill")
+	}
+
+	code = run("throttle", "--kill-external")
+	if code != 0 {
+		t.Fatalf("throttle --kill-external failed with code %d", code)
+	}
+
+	stateAfter, err := s.GetThrottleState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stateAfter.PendingExternalWakes) != 0 {
+		t.Fatalf("expected pending external wakes dropped, got %d", len(stateAfter.PendingExternalWakes))
+	}
+
+	auditData, err := os.ReadFile(filepath.Join(dir, "harbour-audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(auditData), "\"action\":\"kill_external\"") {
+		t.Fatalf("expected harbour audit kill event, got: %q", string(auditData))
+	}
+}

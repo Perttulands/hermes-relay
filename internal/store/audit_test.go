@@ -189,3 +189,39 @@ func TestReadActivationLogEmpty(t *testing.T) {
 		t.Fatalf("expected 0 entries, got %d", len(entries))
 	}
 }
+
+func TestAppendHarbourAuditLog(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry := HarbourAuditEntry{
+		TS:         time.Now().UTC().Format(time.RFC3339),
+		From:       "codex",
+		To:         "athena",
+		Action:     "relay_send",
+		TrustLevel: 1,
+		ID:         "01KK76QKGMJ3WS6JZ4F3NAQQWT",
+	}
+	if err := s.AppendHarbourAuditLog(entry); err != nil {
+		t.Fatalf("AppendHarbourAuditLog: %v", err)
+	}
+
+	data, err := os.ReadFile(s.harbourAuditPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	var got HarbourAuditEntry
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.From != "codex" || got.To != "athena" || got.Action != "relay_send" || got.TrustLevel != 1 {
+		t.Errorf("unexpected entry: %+v", got)
+	}
+}

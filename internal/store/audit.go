@@ -21,6 +21,16 @@ type ActivationLogEntry struct {
 	GatewayURL string `json:"gateway_url,omitempty"`
 }
 
+// HarbourAuditEntry is a single external relay_send event.
+type HarbourAuditEntry struct {
+	TS         string `json:"ts"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Action     string `json:"action"`
+	TrustLevel int    `json:"trust_level"`
+	ID         string `json:"id"`
+}
+
 // LogReadOpts controls filtering when reading the activation log.
 type LogReadOpts struct {
 	ChainID   string
@@ -34,6 +44,10 @@ func (d *Dir) activationLogPath() string {
 	return filepath.Join(d.Root, "activation-log.jsonl")
 }
 
+func (d *Dir) harbourAuditPath() string {
+	return filepath.Join(d.Root, "harbour-audit.jsonl")
+}
+
 // AppendActivationLog appends a single entry to the activation log under flock.
 func (d *Dir) AppendActivationLog(entry ActivationLogEntry) error {
 	line, err := json.Marshal(entry)
@@ -43,6 +57,19 @@ func (d *Dir) AppendActivationLog(entry ActivationLogEntry) error {
 	line = append(line, '\n')
 
 	logPath := d.activationLogPath()
+	lockPath := logPath + ".lock"
+	return flockAppend(lockPath, logPath, line)
+}
+
+// AppendHarbourAuditLog appends a single entry to harbour-audit.jsonl under flock.
+func (d *Dir) AppendHarbourAuditLog(entry HarbourAuditEntry) error {
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal harbour audit entry: %w", err)
+	}
+	line = append(line, '\n')
+
+	logPath := d.harbourAuditPath()
 	lockPath := logPath + ".lock"
 	return flockAppend(lockPath, logPath, line)
 }
