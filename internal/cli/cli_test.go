@@ -586,7 +586,8 @@ func TestSpawnSuccess(t *testing.T) {
 		return exec.Command("bash", "-lc", "exit 0")
 	})
 
-	code := run("spawn", "--repo", repo, "--agent", "codex", "--prompt", "Implement feature X")
+	beadWorkdir := t.TempDir()
+	code := run("spawn", "--repo", repo, "--agent", "codex", "--prompt", "Implement feature X", "--bead-workdir", beadWorkdir)
 	if code != 0 {
 		t.Fatalf("spawn failed with code %d", code)
 	}
@@ -598,38 +599,47 @@ func TestSpawnSuccess(t *testing.T) {
 	}
 }
 
-func TestSpawnWarnsOnIgnoredBeadsDir(t *testing.T) {
+func TestSpawnLegacyBeadsDirActsAsBead_workdir(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
 	repo := t.TempDir()
 	beadsDir := t.TempDir()
-	var calls []string
+	var cmds []*exec.Cmd
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
-		calls = append(calls, name+" "+strings.Join(args, " "))
-		return exec.Command("bash", "-lc", "exit 0")
+		cmd := exec.Command("bash", "-lc", "exit 0")
+		cmds = append(cmds, cmd)
+		return cmd
 	})
 
-	code, stderr := captureRunStderr(
-		t,
+	code := run(
 		"spawn",
 		"--repo", repo,
 		"--agent", "codex",
-		"--prompt", "Use explicit beads dir",
+		"--prompt", "Use legacy beads dir",
 		"--beads-dir", beadsDir,
 	)
 	if code != 0 {
 		t.Fatalf("spawn failed with code %d", code)
 	}
-	if len(calls) != 1 || !strings.Contains(calls[0], "work run Use explicit beads dir") {
-		t.Fatalf("unexpected work call list: %v", calls)
+	if len(cmds) != 1 {
+		t.Fatalf("expected one work call, got %d", len(cmds))
 	}
-	if !strings.Contains(stderr, "--beads-dir is ignored") {
-		t.Fatalf("expected ignored beads-dir warning, got %q", stderr)
+	// Legacy --beads-dir should be used as BEADS_DIR when --bead-workdir is absent
+	found := false
+	want := "BEADS_DIR=" + beadsDir
+	for _, e := range cmds[0].Env {
+		if e == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected BEADS_DIR=%s from legacy --beads-dir, got %v", beadsDir, cmds[0].Env)
 	}
 }
 
-func TestSpawnWarnsOnIgnoredATHENAWorkspace(t *testing.T) {
+func TestSpawnIgnoresATHENAWorkspaceWithoutBeadWorkdir(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
@@ -641,6 +651,7 @@ func TestSpawnWarnsOnIgnoredATHENAWorkspace(t *testing.T) {
 		return exec.Command("bash", "-lc", "exit 0")
 	})
 
+	// Without --bead-workdir, spawn should fail even if ATHENA_WORKSPACE is set
 	code, stderr := captureRunStderr(
 		t,
 		"spawn",
@@ -648,23 +659,21 @@ func TestSpawnWarnsOnIgnoredATHENAWorkspace(t *testing.T) {
 		"--agent", "codex",
 		"--prompt", "Use fallback workspace",
 	)
-	if code != 0 {
-		t.Fatalf("spawn failed with code %d", code)
+	if code != 1 {
+		t.Fatalf("expected exit 1 without --bead-workdir (ATHENA_WORKSPACE should not be a fallback), got %d", code)
 	}
-	if !strings.Contains(stderr, "ATHENA_WORKSPACE=") || !strings.Contains(stderr, workspace) {
-		t.Fatalf("expected ignored ATHENA_WORKSPACE warning, got: %q", stderr)
+	if !strings.Contains(stderr, "--bead-workdir") {
+		t.Fatalf("expected error about --bead-workdir, got %q", stderr)
 	}
 }
 
-func TestSpawnDoesNotRequireLegacyWorkspaceFlags(t *testing.T) {
+func TestSpawnRequiresBeadWorkdir(t *testing.T) {
 	_, cleanup := setup(t)
 	defer cleanup()
 
 	t.Setenv("ATHENA_WORKSPACE", "")
 
-	var calls []string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
-		calls = append(calls, name+" "+strings.Join(args, " "))
 		return exec.Command("bash", "-lc", "exit 0")
 	})
 
@@ -672,13 +681,10 @@ func TestSpawnDoesNotRequireLegacyWorkspaceFlags(t *testing.T) {
 		"spawn",
 		"--repo", t.TempDir(),
 		"--agent", "codex",
-		"--prompt", "Missing workspace config",
+		"--prompt", "Missing bead workdir config",
 	)
-	if code != 0 {
-		t.Fatalf("spawn should not require legacy workspace flags, got %d", code)
-	}
-	if len(calls) != 1 || !strings.Contains(calls[0], "work run Missing workspace config") {
-		t.Fatalf("unexpected work call list: %v", calls)
+	if code != 1 {
+		t.Fatalf("spawn should require --bead-workdir, got exit %d", code)
 	}
 }
 
@@ -693,6 +699,7 @@ func TestSpawnMapsNotifyAndLegacyWaitToWorkRun(t *testing.T) {
 		return exec.Command("bash", "-lc", "exit 0")
 	})
 
+	beadWorkdir := t.TempDir()
 	code, stderr := captureRunStderr(
 		t,
 		"spawn",
@@ -701,6 +708,7 @@ func TestSpawnMapsNotifyAndLegacyWaitToWorkRun(t *testing.T) {
 		"--prompt", "Design system Y",
 		"--wait",
 		"--notify", "athena",
+		"--bead-workdir", beadWorkdir,
 	)
 	if code != 0 {
 		t.Fatalf("spawn --wait --notify failed with code %d", code)
@@ -713,6 +721,65 @@ func TestSpawnMapsNotifyAndLegacyWaitToWorkRun(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--wait is now compatibility-only") {
 		t.Fatalf("expected wait compatibility warning, got %q", stderr)
+	}
+}
+
+func TestSpawnBeadWorkdirPassedAsEnv(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	repo := t.TempDir()
+	beadWorkdir := t.TempDir()
+	var cmds []*exec.Cmd
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		cmd := exec.Command("bash", "-lc", "exit 0")
+		cmds = append(cmds, cmd)
+		return cmd
+	})
+
+	code := run("spawn", "--repo", repo, "--agent", "codex", "--prompt", "Test bead workdir", "--bead-workdir", beadWorkdir)
+	if code != 0 {
+		t.Fatalf("spawn with --bead-workdir failed with code %d", code)
+	}
+	if len(cmds) != 1 {
+		t.Fatalf("expected one work call, got %d", len(cmds))
+	}
+	// Check that BEADS_DIR was set in the subprocess environment
+	found := false
+	want := "BEADS_DIR=" + beadWorkdir
+	for _, e := range cmds[0].Env {
+		if e == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected BEADS_DIR=%s in subprocess env, got %v", beadWorkdir, cmds[0].Env)
+	}
+}
+
+func TestSpawnFailsWithoutBeadWorkdir(t *testing.T) {
+	_, cleanup := setup(t)
+	defer cleanup()
+
+	repo := t.TempDir()
+	t.Setenv("ATHENA_WORKSPACE", "")
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		return exec.Command("bash", "-lc", "exit 0")
+	})
+
+	code, stderr := captureRunStderr(
+		t,
+		"spawn",
+		"--repo", repo,
+		"--agent", "codex",
+		"--prompt", "Missing bead workdir",
+	)
+	if code != 1 {
+		t.Fatalf("expected exit 1 when --bead-workdir is missing, got %d", code)
+	}
+	if !strings.Contains(stderr, "--bead-workdir") {
+		t.Fatalf("expected error about --bead-workdir, got %q", stderr)
 	}
 }
 

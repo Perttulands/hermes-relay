@@ -1796,13 +1796,29 @@ func (c *context) cmdSpawn(args []string) int {
 		agentType = c.agent
 	}
 	prompt := strings.TrimSpace(flags["prompt"])
+	beadID := strings.TrimSpace(flags["bead"])
 	title := strings.TrimSpace(flags["title"])
 	beadsDir := strings.TrimSpace(flags["beads-dir"])
+	beadWorkdir := strings.TrimSpace(flags["bead-workdir"])
+	// --beads-dir is the legacy name; --bead-workdir takes precedence
+	if beadWorkdir == "" && beadsDir != "" {
+		beadWorkdir = beadsDir
+	}
 	wait := flagBool(args, "--wait")
 	notify := strings.TrimSpace(flags["notify"])
 
+	// When --bead is provided, fetch the bead description as the prompt.
+	if beadID != "" && prompt == "" {
+		desc, fetchErr := fetchBeadDescription(beadID)
+		if fetchErr != nil {
+			errorf("spawn: failed to fetch bead %s: %v", beadID, fetchErr)
+			return 1
+		}
+		prompt = desc
+	}
+
 	if repo == "" || agentType == "" || prompt == "" {
-		errorf("usage: relay spawn --repo <path> --agent <type> --prompt <text> [--title <text>] [--beads-dir <path>] [--wait] [--notify <agent>]")
+		errorf("usage: relay spawn --repo <path> --agent <type> --bead-workdir <path> (--prompt <text> | --bead <id>) [--notify <agent>]")
 		return 1
 	}
 	if !validSpawnAgentSet[agentType] {
@@ -1824,10 +1840,9 @@ func (c *context) cmdSpawn(args []string) int {
 	if title != "" && title != prompt {
 		warnf("spawn: --title is ignored; work run uses the prompt as task identity")
 	}
-	if beadsDir != "" {
-		warnf("spawn: --beads-dir is ignored; work run creates beads in the target repo context")
-	} else if ws := strings.TrimSpace(os.Getenv("ATHENA_WORKSPACE")); ws != "" {
-		warnf("spawn: ATHENA_WORKSPACE=%q is ignored; work run creates beads in the target repo context", ws)
+	if beadWorkdir == "" {
+		errorf("spawn: --bead-workdir is required (project root for bead creation)")
+		return 1
 	}
 	if wait {
 		warnf("spawn: --wait is now compatibility-only; relay spawn already waits for work run to finish")
@@ -1839,16 +1854,59 @@ func (c *context) cmdSpawn(args []string) int {
 	}
 
 	workCmd := execCommand(resolveWorkBinary(), workArgs...)
+	workCmd.Env = append(os.Environ(), "BEADS_DIR="+beadWorkdir)
 	workCmd.Stdout = os.Stdout
 	workCmd.Stderr = os.Stderr
+	exitCode := 0
 	if err := workCmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode()
+			exitCode = exitErr.ExitCode()
+		} else {
+			errorf("spawn: work run failed: %v", err)
+			exitCode = 1
 		}
-		errorf("spawn: work run failed: %v", err)
-		return 1
 	}
-	return 0
+
+	// Send completion message to requesting agent via relay.
+	if beadID != "" && notify != "" {
+		outcome := "success"
+		if exitCode != 0 {
+			outcome = "error"
+		}
+		resultMsg := fmt.Sprintf(`{"type":"task_result","bead_id":%q,"exit_code":%d,"outcome":%q,"spawned_by":%q}`,
+			beadID, exitCode, outcome, c.agent)
+		msg := core.Message{
+			From:    c.agent,
+			To:      notify,
+			Body:    resultMsg,
+			Subject: fmt.Sprintf("spawn result: %s %s", beadID, outcome),
+			Type:    "task_result",
+		}
+		if sendErr := c.store.Send(msg); sendErr != nil {
+			warnf("spawn: failed to send completion message to %s: %v", notify, sendErr)
+		}
+	}
+
+	return exitCode
+}
+
+// fetchBeadDescription runs br show <id> and extracts the description text.
+func fetchBeadDescription(beadID string) (string, error) {
+	brBin := resolveBRBinary()
+	cmd := execCommand(brBin, "show", beadID)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("br show %s: %w", beadID, err)
+	}
+	// The first line after the status line is the description.
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) >= 2 {
+		return strings.TrimSpace(lines[1]), nil
+	}
+	if len(lines) == 1 {
+		return strings.TrimSpace(lines[0]), nil
+	}
+	return beadID, nil
 }
 
 func mapSpawnAgentToRuntime(agentType string) (string, string) {
