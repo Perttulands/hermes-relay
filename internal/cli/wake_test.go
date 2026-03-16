@@ -188,3 +188,138 @@ func TestSendWakeNoTokenWhenEmpty(t *testing.T) {
 		t.Errorf("should not include --token when gateway_token is empty, got: %s", calls[0])
 	}
 }
+
+func TestSendWakeInjectsViaWorkSend(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
+
+	// Register target with tmux_session but NO gateway_url
+	run("register", "target-agent", "--tmux-session", "my-tmux-sess")
+	run("register", "test-agent")
+
+	var calls []string
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		// work send succeeds
+		return exec.Command("true")
+	})
+
+	code := run("send", "target-agent", "do the thing", "--wake")
+	if code != 0 {
+		t.Fatalf("send --wake failed with code %d", code)
+	}
+
+	// Should have called work send with the tmux session
+	if len(calls) == 0 {
+		t.Fatal("expected work send call, got none")
+	}
+	call := calls[0]
+	if !strings.Contains(call, "send my-tmux-sess") {
+		t.Errorf("expected work send with tmux session, got: %s", call)
+	}
+	if !strings.Contains(call, "--file") {
+		t.Errorf("expected --file flag, got: %s", call)
+	}
+
+	// Should NOT have called systemctl (work send succeeded)
+	for _, c := range calls {
+		if strings.Contains(c, "systemctl") {
+			t.Errorf("should not fall back to systemctl when work send succeeds, got: %s", c)
+		}
+	}
+}
+
+func TestSendWakeWorkSendFallsBackToSystemctl(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
+
+	// Register target with tmux_session but NO gateway_url
+	run("register", "target-agent", "--tmux-session", "my-tmux-sess")
+	run("register", "test-agent")
+
+	var calls []string
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		// Everything fails
+		return exec.Command("false")
+	})
+
+	// Should not crash — falls through to systemctl
+	run("send", "target-agent", "hello", "--wake")
+
+	// Should have tried work send first
+	foundWorkSend := false
+	for _, c := range calls {
+		if strings.Contains(c, "send my-tmux-sess") {
+			foundWorkSend = true
+			break
+		}
+	}
+	if !foundWorkSend {
+		t.Errorf("expected work send attempt, got: %v", calls)
+	}
+
+	// Should have tried systemctl as fallback
+	foundSystemctl := false
+	for _, c := range calls {
+		if strings.Contains(c, "systemctl") {
+			foundSystemctl = true
+			break
+		}
+	}
+	if !foundSystemctl {
+		t.Errorf("expected systemctl fallback call, got: %v", calls)
+	}
+}
+
+func TestSendWakeNoTmuxSessionSkipsWorkSend(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
+
+	// Register target WITHOUT tmux_session or gateway_url
+	run("register", "target-agent")
+	run("register", "test-agent")
+
+	var calls []string
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return exec.Command("false")
+	})
+
+	run("send", "target-agent", "hello", "--wake")
+
+	// Should NOT have called work send (no tmux_session)
+	for _, c := range calls {
+		if strings.Contains(c, "work") && strings.Contains(c, "send") {
+			t.Errorf("should not call work send when no tmux_session, got: %s", c)
+		}
+	}
+}
+
+func TestRegisterTmuxSessionWrittenToMeta(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	code := run("register", "tmux-agent", "--tmux-session", "my-session-name")
+	if code != 0 {
+		t.Fatalf("register failed with code %d", code)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "tmux-agent", "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta core.AgentMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.TmuxSession != "my-session-name" {
+		t.Errorf("expected tmux_session=my-session-name, got %s", meta.TmuxSession)
+	}
+}
