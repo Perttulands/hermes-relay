@@ -1523,7 +1523,7 @@ func (c *context) cmdPolicy(args []string) int {
 			return 1
 		}
 		if !c.quiet {
-			fmt.Println("policy: reset to default deny")
+			fmt.Println("policy: reset to default allow")
 		}
 		return 0
 	}

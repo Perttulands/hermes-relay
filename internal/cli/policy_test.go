@@ -46,8 +46,8 @@ func TestPolicyShowEmpty(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("policy --show failed with code %d", code)
 	}
-	if !strings.Contains(out, "deny") {
-		t.Errorf("expected default deny in output, got: %q", out)
+	if !strings.Contains(out, "allow") {
+		t.Errorf("expected default allow in output, got: %q", out)
 	}
 }
 
@@ -136,8 +136,8 @@ func TestPolicyReset(t *testing.T) {
 	if len(p.Deny) != 0 {
 		t.Errorf("expected 0 deny rules after reset, got %d", len(p.Deny))
 	}
-	if p.Default != "deny" {
-		t.Errorf("expected default deny after reset, got %s", p.Default)
+	if p.Default != "allow" {
+		t.Errorf("expected default allow after reset, got %s", p.Default)
 	}
 }
 
@@ -169,9 +169,9 @@ func TestSendWakeDeniedByPolicy(t *testing.T) {
 	run("register", "target", "--gateway-url", "ws://localhost:4000/")
 	run("register", "test-agent")
 
-	// Write a default-deny policy (no rules allow test-agent)
+	// Write an explicit default-deny policy (no rules allow test-agent)
 	s, _ := store.New(dir)
-	policy := store.DefaultPolicy()
+	policy := &store.ActivationPolicy{Default: "deny"}
 	if err := s.SavePolicy(policy); err != nil {
 		t.Fatal(err)
 	}
@@ -251,36 +251,35 @@ func TestSendWakeAllowedByPolicy(t *testing.T) {
 	}
 }
 
-func TestSendWakeNoPolicyFileDefaultDeny(t *testing.T) {
-	dir, cleanup := setup(t)
+func TestSendWakeNoPolicyFileDefaultAllow(t *testing.T) {
+	_, cleanup := setup(t)
 	defer cleanup()
 
 	run("register", "target", "--gateway-url", "ws://localhost:4000/")
 	run("register", "test-agent")
-	if err := os.Remove(filepath.Join(dir, "activation-policy.toml")); err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
 
-	// No policy file — should default to deny
+	// No policy file — should default to allow
 	var calls []string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		return exec.Command("true")
 	})
 
-	code, stderr := captureRunStderr(t, "send", "target", "no policy file", "--wake")
-	if code != 1 {
-		t.Fatalf("send --wake should fail with default deny when no policy file, got %d", code)
-	}
-	if !strings.Contains(stderr, "unauthorized by activation policy") {
-		t.Fatalf("expected clear policy denial message, got: %q", stderr)
+	code := run("send", "target", "no policy file", "--wake")
+	if code != 0 {
+		t.Fatalf("send --wake should succeed with default allow when no policy file, got %d", code)
 	}
 
-	// Should NOT have called openclaw (default deny)
+	// Should have called openclaw (default allow)
+	foundOpenclaw := false
 	for _, c := range calls {
 		if strings.Contains(c, "openclaw system event") {
-			t.Errorf("should not call openclaw with default deny (no policy file), got: %s", c)
+			foundOpenclaw = true
+			break
 		}
+	}
+	if !foundOpenclaw {
+		t.Errorf("expected openclaw call with default allow (no policy file), got: %v", calls)
 	}
 }
 
@@ -292,7 +291,7 @@ func TestSendDeniedByPolicyWithoutWake(t *testing.T) {
 	run("register", "test-agent")
 
 	s, _ := store.New(dir)
-	policy := store.DefaultPolicy()
+	policy := &store.ActivationPolicy{Default: "deny"}
 	if err := s.SavePolicy(policy); err != nil {
 		t.Fatal(err)
 	}
