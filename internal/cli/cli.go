@@ -202,6 +202,7 @@ func (c *context) cmdRegister(args []string) int {
 		GatewayURL:   flags["gateway-url"],
 		GatewayToken: flags["gateway-token"],
 		SessionKey:   flags["session-key"],
+		TmuxSession:  flags["tmux-session"],
 		RegisteredAt: now,
 	}
 	if err := c.store.Register(meta); err != nil {
@@ -581,6 +582,30 @@ func (c *context) cmdSend(args []string) int {
 					return 0
 				}
 				// fall through to existing logic — log injection_failed below
+			}
+
+			// Try work send for tmux session injection
+			if metaErr == nil && meta.TmuxSession != "" {
+				tmpFile, tmpErr := os.CreateTemp("", "relay-wake-*.txt")
+				if tmpErr == nil {
+					tmpFile.WriteString(body)
+					tmpFile.Close()
+					defer os.Remove(tmpFile.Name())
+
+					workBin := resolveWorkBinary()
+					cmd := execCommand(workBin, "send", meta.TmuxSession, "--file", tmpFile.Name())
+					if err := cmd.Run(); err == nil {
+						_ = c.store.UpdateCooldown(to)
+						logActivation(c.store, c.agent, to, chainID, wakeDepth, "delivered", "work send")
+						if !c.quiet {
+							fmt.Printf("wake: injected into %s via work send (chain: %s)\n", to, chainID)
+						}
+						return 0
+					}
+					// Log failure and fall through to systemctl
+					logActivation(c.store, c.agent, to, chainID, wakeDepth, "injection_failed",
+						fmt.Sprintf("work send to %s failed", meta.TmuxSession))
+				}
 			}
 
 			// Try to wake the target agent's OpenClaw service
@@ -1523,7 +1548,7 @@ func (c *context) cmdPolicy(args []string) int {
 			return 1
 		}
 		if !c.quiet {
-			fmt.Println("policy: reset to default deny")
+			fmt.Println("policy: reset to default allow")
 		}
 		return 0
 	}

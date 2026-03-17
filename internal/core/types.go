@@ -49,6 +49,7 @@ type AgentMeta struct {
 	GatewayURL   string `json:"gateway_url,omitempty"`
 	GatewayToken string `json:"gateway_token,omitempty"`
 	SessionKey   string `json:"session_key,omitempty"`
+	TmuxSession  string `json:"tmux_session,omitempty"`
 	RegisteredAt string `json:"registered_at"`
 }
 

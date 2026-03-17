@@ -74,9 +74,9 @@ func matchesRule(r PolicyRule, from, to string) bool {
 		(r.To == "*" || r.To == to)
 }
 
-// DefaultPolicy returns a conservative default-deny policy.
+// DefaultPolicy returns a default-allow policy.
 func DefaultPolicy() *ActivationPolicy {
-	return &ActivationPolicy{Default: "deny"}
+	return &ActivationPolicy{Default: "allow"}
 }
 
 // policyPath returns the path to activation-policy.toml.
@@ -89,7 +89,7 @@ func (d *Dir) graduationPath() string {
 }
 
 // LoadPolicy reads the activation policy from activation-policy.toml.
-// Returns a default-deny policy if the file does not exist.
+// Returns a default-allow policy if the file does not exist.
 func (d *Dir) LoadPolicy() (*ActivationPolicy, error) {
 	p, err := LoadPolicy(d.policyPath())
 	if err != nil {
@@ -109,7 +109,7 @@ func (d *Dir) SavePolicy(p *ActivationPolicy) error {
 }
 
 // LoadPolicy reads an ActivationPolicy from a TOML file.
-// Returns a default-deny policy if the file does not exist.
+// Returns a default-allow policy if the file does not exist.
 func LoadPolicy(path string) (*ActivationPolicy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -150,7 +150,7 @@ func SavePolicy(path string, p *ActivationPolicy) error {
 // Supports: top-level `default = "..."`, `[[allow]]` and `[[deny]]` table arrays
 // with `from` and `to` string fields.
 func parsePolicyTOML(input string) (*ActivationPolicy, error) {
-	p := &ActivationPolicy{Default: "deny"}
+	p := &ActivationPolicy{Default: "allow"}
 	scanner := bufio.NewScanner(strings.NewReader(input))
 
 	type section int

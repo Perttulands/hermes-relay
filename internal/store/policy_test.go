@@ -6,17 +6,17 @@ import (
 	"testing"
 )
 
-func TestIsAllowedDefaultDenyNoRules(t *testing.T) {
+func TestIsAllowedDefaultAllowNoRules(t *testing.T) {
 	p := DefaultPolicy()
-	if p.IsAllowed("hermes", "iris") {
-		t.Error("default deny should block when no rules match")
+	if !p.IsAllowed("hermes", "iris") {
+		t.Error("default allow should permit when no rules match")
 	}
 }
 
-func TestIsAllowedDefaultAllow(t *testing.T) {
-	p := &ActivationPolicy{Default: "allow"}
-	if !p.IsAllowed("hermes", "iris") {
-		t.Error("default allow should permit when no rules match")
+func TestIsAllowedDefaultDeny(t *testing.T) {
+	p := &ActivationPolicy{Default: "deny"}
+	if p.IsAllowed("hermes", "iris") {
+		t.Error("default deny should block when no rules match")
 	}
 }
 
@@ -133,6 +133,36 @@ to = "chiron"
 	}
 }
 
+func TestParsePolicyTOMLFallbackAllow(t *testing.T) {
+	// Minimal input with no default key should fall back to allow
+	input := `
+[[allow]]
+from = "hermes"
+to = "iris"
+`
+	p, err := parsePolicyTOML(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Default != "allow" {
+		t.Errorf("expected fallback default=allow, got %s", p.Default)
+	}
+	if len(p.Allow) != 1 {
+		t.Fatalf("expected 1 allow rule, got %d", len(p.Allow))
+	}
+}
+
+func TestParsePolicyTOMLEmptyInputFallbackAllow(t *testing.T) {
+	// Completely empty input should fall back to allow
+	p, err := parsePolicyTOML("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Default != "allow" {
+		t.Errorf("expected fallback default=allow for empty input, got %s", p.Default)
+	}
+}
+
 func TestParsePolicyTOMLInvalidDefault(t *testing.T) {
 	input := `default = "banana"`
 	_, err := parsePolicyTOML(input)
@@ -172,8 +202,8 @@ func TestLoadPolicyMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Default != "deny" {
-		t.Errorf("missing file should return default deny, got %s", p.Default)
+	if p.Default != "allow" {
+		t.Errorf("missing file should return default allow, got %s", p.Default)
 	}
 }
 
@@ -234,13 +264,13 @@ func TestDirLoadPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No file: should return default deny
+	// No file: should return default allow
 	p, err := d.LoadPolicy()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Default != "deny" {
-		t.Errorf("expected default deny, got %s", p.Default)
+	if p.Default != "allow" {
+		t.Errorf("expected default allow, got %s", p.Default)
 	}
 
 	// Save and reload
