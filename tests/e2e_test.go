@@ -473,3 +473,129 @@ func TestE2E_CommandPostAndList(t *testing.T) {
 		t.Errorf("status should show pending command, got: %q", stdout)
 	}
 }
+
+// TestE2E_DefaultAllowPolicyNoFile verifies that when no activation-policy.toml
+// exists, agents can send messages to each other (default-allow).
+func TestE2E_DefaultAllowPolicyNoFile(t *testing.T) {
+	bin := buildRelay(t)
+	dir := t.TempDir()
+	env := map[string]string{"RELAY_DIR": dir}
+
+	// Register two agents — do NOT seed any policy file
+	runRelay(t, bin, env, "register", "sender", "--agent", "sender")
+	runRelay(t, bin, env, "register", "receiver", "--agent", "receiver")
+
+	// Send should succeed without any policy file (default-allow)
+	stdout, stderr, code := runRelay(t, bin, env, "send", "receiver", "no policy needed", "--agent", "sender")
+	if code != 0 {
+		t.Fatalf("send should succeed with default-allow (no policy file): exit %d, stderr: %q", code, stderr)
+	}
+	if !strings.Contains(strings.ToLower(stdout), "sent") {
+		t.Errorf("send output should indicate success, got: %q", stdout)
+	}
+
+	// Read back to confirm delivery
+	stdout, _, code = runRelay(t, bin, env, "read", "--agent", "receiver", "--json")
+	if code != 0 {
+		t.Fatalf("read: exit %d", code)
+	}
+	if !strings.Contains(stdout, "no policy needed") {
+		t.Errorf("message should be delivered, got: %q", stdout)
+	}
+}
+
+// TestE2E_DefaultAllowPolicyReset verifies that relay policy --reset
+// produces a default-allow policy.
+func TestE2E_DefaultAllowPolicyReset(t *testing.T) {
+	bin := buildRelay(t)
+	dir := t.TempDir()
+	env := map[string]string{"RELAY_DIR": dir, "RELAY_AGENT": "policy-agent"}
+
+	runRelay(t, bin, env, "register", "policy-agent")
+
+	// Write a deny policy first
+	policyPath := filepath.Join(dir, "activation-policy.toml")
+	if err := os.WriteFile(policyPath, []byte("default = \"deny\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reset should produce allow
+	stdout, _, code := runRelay(t, bin, env, "policy", "--reset")
+	if code != 0 {
+		t.Fatalf("policy --reset: exit %d", code)
+	}
+	if !strings.Contains(stdout, "allow") {
+		t.Errorf("reset output should mention allow, got: %q", stdout)
+	}
+
+	// Show should confirm allow
+	stdout, _, code = runRelay(t, bin, env, "policy", "--show")
+	if code != 0 {
+		t.Fatalf("policy --show: exit %d", code)
+	}
+	if !strings.Contains(stdout, "allow") {
+		t.Errorf("policy show should say allow after reset, got: %q", stdout)
+	}
+}
+
+// TestE2E_RegisterTmuxSession verifies that --tmux-session is persisted
+// to meta.json and survives a round-trip through the binary.
+func TestE2E_RegisterTmuxSession(t *testing.T) {
+	bin := buildRelay(t)
+	dir := t.TempDir()
+	env := map[string]string{"RELAY_DIR": dir, "RELAY_AGENT": "tmux-agent"}
+
+	_, _, code := runRelay(t, bin, env, "register", "tmux-agent", "--tmux-session", "polis-boss")
+	if code != 0 {
+		t.Fatalf("register: exit %d", code)
+	}
+
+	// Read meta.json directly
+	data, err := os.ReadFile(filepath.Join(dir, "agents", "tmux-agent", "meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"tmux_session"`) || !strings.Contains(string(data), "polis-boss") {
+		t.Errorf("meta.json should contain tmux_session=polis-boss, got: %s", data)
+	}
+}
+
+// TestE2E_SendWakeWithTmuxSessionLogsActivation verifies that relay send --wake
+// with a tmux_session agent attempts the work send path and logs to the
+// activation log, regardless of whether work is available.
+func TestE2E_SendWakeWithTmuxSessionLogsActivation(t *testing.T) {
+	bin := buildRelay(t)
+	dir := t.TempDir()
+	seedAllowAllPolicy(t, dir)
+	env := map[string]string{"RELAY_DIR": dir}
+
+	// Register target with tmux_session (no gateway_url)
+	runRelay(t, bin, env, "register", "wake-target", "--agent", "wake-target", "--tmux-session", "test-sess")
+	runRelay(t, bin, env, "register", "wake-sender", "--agent", "wake-sender")
+
+	// Send with --wake — work send will fail (no real session), but should not crash
+	_, _, code := runRelay(t, bin, env, "send", "wake-target", "check in please", "--wake", "--agent", "wake-sender")
+	// Exit 0 expected — message delivered to inbox, wake failure is non-fatal
+	if code != 0 {
+		t.Fatalf("send --wake: exit %d (should be 0 even if wake injection fails)", code)
+	}
+
+	// Message should be in inbox regardless of wake outcome
+	stdout, _, code := runRelay(t, bin, env, "read", "--agent", "wake-target", "--json")
+	if code != 0 {
+		t.Fatalf("read: exit %d", code)
+	}
+	if !strings.Contains(stdout, "check in please") {
+		t.Errorf("message should be delivered to inbox, got: %q", stdout)
+	}
+
+	// Activation log should have an entry for this wake attempt
+	logData, err := os.ReadFile(filepath.Join(dir, "activation-log.jsonl"))
+	if err != nil {
+		t.Fatalf("read activation log: %v", err)
+	}
+	logStr := string(logData)
+	if !strings.Contains(logStr, "wake-target") {
+		t.Errorf("activation log should mention target, got: %q", logStr)
+	}
+}
