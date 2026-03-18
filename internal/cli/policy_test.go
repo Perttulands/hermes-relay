@@ -119,9 +119,12 @@ func TestPolicyReset(t *testing.T) {
 	run("policy", "--deny", "chiron", "iris")
 
 	// Reset
-	code := run("policy", "--reset")
+	code, out := captureRun(t, "policy", "--reset")
 	if code != 0 {
 		t.Fatalf("policy --reset failed with code %d", code)
+	}
+	if !strings.Contains(out, "default allow") {
+		t.Fatalf("expected reset output to mention default allow, got: %q", out)
 	}
 
 	// Verify clean slate
@@ -252,11 +255,14 @@ func TestSendWakeAllowedByPolicy(t *testing.T) {
 }
 
 func TestSendWakeNoPolicyFileDefaultAllow(t *testing.T) {
-	_, cleanup := setup(t)
+	dir, cleanup := setup(t)
 	defer cleanup()
 
 	run("register", "target", "--gateway-url", "ws://localhost:4000/")
 	run("register", "test-agent")
+	if err := os.Remove(filepath.Join(dir, "activation-policy.toml")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 
 	// No policy file — should default to allow
 	var calls []string

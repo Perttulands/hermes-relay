@@ -24,7 +24,7 @@ func setup(t *testing.T) (string, func()) {
 	os.Setenv("RELAY_AGENT", "test-agent")
 
 	// Most CLI tests focus command behavior, not policy denial mechanics.
-	// Seed a permissive policy to avoid default-deny blocking unrelated tests.
+	// Seed a permissive policy to avoid unrelated policy blocking.
 	s, err := store.New(dir)
 	if err != nil {
 		t.Fatalf("setup store: %v", err)
