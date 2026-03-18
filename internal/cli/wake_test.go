@@ -199,10 +199,17 @@ func TestSendWakeInjectsViaWorkSend(t *testing.T) {
 	run("register", "target-agent", "--tmux-session", "my-tmux-sess")
 	run("register", "test-agent")
 
-	var calls []string
+	var calls [][]string
+	var fileBody string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
-		calls = append(calls, name+" "+strings.Join(args, " "))
-		// work send succeeds
+		call := append([]string{name}, args...)
+		calls = append(calls, call)
+		if len(args) >= 4 && args[0] == "send" && args[2] == "--file" {
+			data, err := os.ReadFile(args[3])
+			if err == nil {
+				fileBody = string(data)
+			}
+		}
 		return exec.Command("true")
 	})
 
@@ -216,26 +223,35 @@ func TestSendWakeInjectsViaWorkSend(t *testing.T) {
 		t.Fatal("expected work send call, got none")
 	}
 	call := calls[0]
-	if !strings.Contains(call, "send my-tmux-sess") {
-		t.Errorf("expected work send with tmux session, got: %s", call)
+	if len(call) < 5 || call[1] != "send" || call[2] != "my-tmux-sess" || call[3] != "--file" {
+		t.Fatalf("expected work send <session> --file <path>, got: %v", call)
 	}
-	if !strings.Contains(call, "--file") {
-		t.Errorf("expected --file flag, got: %s", call)
+	if fileBody != "do the thing" {
+		t.Errorf("expected wake body in temp file, got: %q", fileBody)
 	}
 
 	// Should NOT have called systemctl (work send succeeded)
 	for _, c := range calls {
-		if strings.Contains(c, "systemctl") {
-			t.Errorf("should not fall back to systemctl when work send succeeds, got: %s", c)
+		if len(c) > 0 && strings.Contains(c[0], "systemctl") {
+			t.Errorf("should not fall back to systemctl when work send succeeds, got: %v", c)
 		}
 	}
 }
 
-func TestSendWakeWorkSendFallsBackToSystemctl(t *testing.T) {
+func TestSendWakeWorkMissingFallsBackToSystemctl(t *testing.T) {
 	dir, cleanup := setup(t)
 	defer cleanup()
 
 	setupAllowAllPolicy(t, dir)
+
+	oldHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	if err := os.Setenv("HOME", tmpHome); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Setenv("HOME", oldHome)
+	})
 
 	// Register target with tmux_session but NO gateway_url
 	run("register", "target-agent", "--tmux-session", "my-tmux-sess")
@@ -244,12 +260,16 @@ func TestSendWakeWorkSendFallsBackToSystemctl(t *testing.T) {
 	var calls []string
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, name+" "+strings.Join(args, " "))
-		// Everything fails
-		return exec.Command("false")
+		if name == "work" {
+			return exec.Command("/path/that/does/not/exist")
+		}
+		return exec.Command("true")
 	})
 
-	// Should not crash — falls through to systemctl
-	run("send", "target-agent", "hello", "--wake")
+	code := run("send", "target-agent", "hello", "--wake")
+	if code != 0 {
+		t.Fatalf("send --wake should succeed when work is missing and systemctl succeeds, got %d", code)
+	}
 
 	// Should have tried work send first
 	foundWorkSend := false
@@ -273,6 +293,49 @@ func TestSendWakeWorkSendFallsBackToSystemctl(t *testing.T) {
 	}
 	if !foundSystemctl {
 		t.Errorf("expected systemctl fallback call, got: %v", calls)
+	}
+}
+
+func TestSendWakeWorkSendNonZeroFallsBackToSystemctl(t *testing.T) {
+	dir, cleanup := setup(t)
+	defer cleanup()
+
+	setupAllowAllPolicy(t, dir)
+
+	run("register", "target-agent", "--tmux-session", "my-tmux-sess")
+	run("register", "test-agent")
+
+	var calls []string
+	withMockExec(t, func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if strings.HasSuffix(name, "work") || name == "work" {
+			return exec.Command("sh", "-c", "echo work boom >&2; exit 7")
+		}
+		return exec.Command("true")
+	})
+
+	code := run("send", "target-agent", "hello", "--wake")
+	if code != 0 {
+		t.Fatalf("send --wake should succeed when work send fails and systemctl succeeds, got %d", code)
+	}
+
+	foundSystemctl := false
+	for _, c := range calls {
+		if strings.Contains(c, "systemctl") {
+			foundSystemctl = true
+			break
+		}
+	}
+	if !foundSystemctl {
+		t.Fatalf("expected systemctl fallback call, got: %v", calls)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "activation-log.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "work send failed: work boom") {
+		t.Fatalf("expected activation log to include work stderr, got: %s", data)
 	}
 }
 

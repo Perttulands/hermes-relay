@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -182,7 +183,7 @@ func extractGlobalFlags(args []string) (globalFlagsT, []string) {
 
 func (c *context) cmdRegister(args []string) int {
 	if len(args) < 1 {
-		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>] [--skills <s1,s2>] [--budget <N>] [--cooldown <dur>]")
+		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>] [--skills <s1,s2>] [--budget <N>] [--cooldown <dur>] [--tmux-session <name>]")
 		return 1
 	}
 	name := args[0]
@@ -588,23 +589,31 @@ func (c *context) cmdSend(args []string) int {
 			if metaErr == nil && meta.TmuxSession != "" {
 				tmpFile, tmpErr := os.CreateTemp("", "relay-wake-*.txt")
 				if tmpErr == nil {
-					tmpFile.WriteString(body)
-					tmpFile.Close()
 					defer os.Remove(tmpFile.Name())
-
-					workBin := resolveWorkBinary()
-					cmd := execCommand(workBin, "send", meta.TmuxSession, "--file", tmpFile.Name())
-					if err := cmd.Run(); err == nil {
-						_ = c.store.UpdateCooldown(to)
-						logActivation(c.store, c.agent, to, chainID, wakeDepth, "delivered", "work send")
-						if !c.quiet {
-							fmt.Printf("wake: injected into %s via work send (chain: %s)\n", to, chainID)
+					if _, err := tmpFile.WriteString(body); err == nil {
+						err = tmpFile.Close()
+						if err == nil {
+							workBin := resolveWorkBinary()
+							cmd := execCommand(workBin, "send", meta.TmuxSession, "--file", tmpFile.Name())
+							var stderr bytes.Buffer
+							cmd.Stderr = &stderr
+							if err := cmd.Run(); err == nil {
+								_ = c.store.UpdateCooldown(to)
+								logActivation(c.store, c.agent, to, chainID, wakeDepth, "delivered", "work send")
+								if !c.quiet {
+									fmt.Printf("wake: injected into %s via work send (chain: %s)\n", to, chainID)
+								}
+								return 0
+							}
+							reason := strings.TrimSpace(stderr.String())
+							if reason != "" {
+								reason = fmt.Sprintf("work send failed: %s", reason)
+							} else {
+								reason = fmt.Sprintf("work send failed: %v", err)
+							}
+							logActivation(c.store, c.agent, to, chainID, wakeDepth, "injection_failed", reason)
 						}
-						return 0
 					}
-					// Log failure and fall through to systemctl
-					logActivation(c.store, c.agent, to, chainID, wakeDepth, "injection_failed",
-						fmt.Sprintf("work send to %s failed", meta.TmuxSession))
 				}
 			}
 
