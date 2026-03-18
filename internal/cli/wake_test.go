@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,18 @@ import (
 
 	"github.com/Perttulands/hermes-relay/internal/core"
 )
+
+// TestHelperWorkFail is a test subprocess helper (TestHelperProcess pattern).
+// It writes "work boom" to stderr and exits 7, simulating a failed work send.
+// Invoked via exec.Command(os.Args[0], "-test.run=TestHelperWorkFail") with
+// GO_WANT_HELPER_PROCESS=1 in the environment.
+func TestHelperWorkFail(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "work boom")
+	os.Exit(7)
+}
 
 func TestSendWakeInjectsViaOpenClaw(t *testing.T) {
 	dir, cleanup := setup(t)
@@ -309,7 +322,11 @@ func TestSendWakeWorkSendNonZeroFallsBackToSystemctl(t *testing.T) {
 	withMockExec(t, func(name string, args ...string) *exec.Cmd {
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		if strings.HasSuffix(name, "work") || name == "work" {
-			return exec.Command("sh", "-c", "echo work boom >&2; exit 7")
+			// TestHelperProcess pattern: re-invoke the test binary as a subprocess
+			// to produce controlled stderr output without using sh -c.
+			cmd := exec.Command(os.Args[0], "-test.run=TestHelperWorkFail")
+			cmd.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
+			return cmd
 		}
 		return exec.Command("true")
 	})
