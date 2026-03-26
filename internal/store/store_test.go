@@ -534,6 +534,22 @@ func TestPatternsOverlap(t *testing.T) {
 		{"src/pkg/test.go", "src/**/test.go", true},
 		{"src/pkg/test.go", "lib/**/test.go", false},
 
+		// Concrete file vs wildcard in same dir (b is wildcard, reversed)
+		{"src/main.go", "src/*.go", true},
+
+		// Wildcard in different dirs (no ** means no cross-dir match)
+		{"*.go", "src/*.go", false},
+
+		// Nested ** with extension wildcard
+		{"src/**/*.go", "src/pkg/test.go", true},
+		{"src/pkg/test.go", "src/**/*.go", true},
+
+		// ** with extension in root
+		{"**/*.go", "src/main.go", true},
+
+		// Same-dir wildcard: one has no extension, other has extension
+		{"src/*", "src/*.go", false},
+
 		// Disjoint concrete files
 		{"src/a.go", "src/b.go", false},
 		{"lib/x.go", "src/y.go", false},
