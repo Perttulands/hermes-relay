@@ -50,6 +50,9 @@ type AgentMeta struct {
 	GatewayToken string `json:"gateway_token,omitempty"`
 	SessionKey   string `json:"session_key,omitempty"`
 	TmuxSession  string `json:"tmux_session,omitempty"`
+	SpawnEnabled bool   `json:"spawn_enabled,omitempty"`
+	DefaultRepo  string `json:"default_repo,omitempty"`
+	SpawnRuntime string `json:"spawn_runtime,omitempty"`
 	RegisteredAt string `json:"registered_at"`
 }
 

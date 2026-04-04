@@ -862,6 +862,49 @@ func (d *Dir) Metrics(staleThreshold time.Duration) (Metrics, error) {
 	return m, nil
 }
 
+// AcquireSpawnLock tries to create a spawn lock file for an agent using O_EXCL.
+// If a stale lock exists (process no longer running), it is cleaned up first.
+// Returns nil if lock acquired, error if already locked by a live process.
+func (d *Dir) AcquireSpawnLock(agent string) error {
+	lockPath := filepath.Join(d.AgentDir(agent), "spawn.lock")
+
+	// Check if existing lock is stale (process no longer running)
+	if data, err := os.ReadFile(lockPath); err == nil {
+		var pid int
+		if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); scanErr == nil && pid > 0 {
+			proc, findErr := os.FindProcess(pid)
+			if findErr == nil {
+				if sigErr := proc.Signal(syscall.Signal(0)); sigErr == nil {
+					return fmt.Errorf("spawn lock held by pid %d for %s", pid, agent)
+				}
+			}
+		}
+		// Stale lock — remove it
+		os.Remove(lockPath)
+	}
+
+	f, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("spawn lock already exists for %s", agent)
+		}
+		return fmt.Errorf("create spawn lock for %s: %w", agent, err)
+	}
+	f.Close()
+	return nil
+}
+
+// WriteSpawnPID writes the spawned process PID to the spawn lock file.
+func (d *Dir) WriteSpawnPID(agent string, pid int) error {
+	lockPath := filepath.Join(d.AgentDir(agent), "spawn.lock")
+	return atomicWrite(lockPath, []byte(fmt.Sprintf("%d\n", pid)))
+}
+
+// ReleaseSpawnLock removes the spawn lock file for an agent.
+func (d *Dir) ReleaseSpawnLock(agent string) error {
+	return os.Remove(filepath.Join(d.AgentDir(agent), "spawn.lock"))
+}
+
 // TouchWake touches the wake trigger file.
 func (d *Dir) TouchWake(text string) error {
 	triggerPath := filepath.Join(d.Root, "wake", "trigger")

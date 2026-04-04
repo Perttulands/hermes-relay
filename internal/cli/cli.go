@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Perttulands/hermes-relay/internal/core"
@@ -183,7 +184,7 @@ func extractGlobalFlags(args []string) (globalFlagsT, []string) {
 
 func (c *context) cmdRegister(args []string) int {
 	if len(args) < 1 {
-		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>] [--skills <s1,s2>] [--budget <N>] [--cooldown <dur>] [--tmux-session <name>]")
+		errorf("usage: relay register <name> [--program <p>] [--model <m>] [--task <t>] [--bead <b>] [--skills <s1,s2>] [--budget <N>] [--cooldown <dur>] [--tmux-session <name>] [--spawn-enabled] [--spawn-repo <path>] [--spawn-runtime <rt>]")
 		return 1
 	}
 	name := args[0]
@@ -204,6 +205,9 @@ func (c *context) cmdRegister(args []string) int {
 		GatewayToken: flags["gateway-token"],
 		SessionKey:   flags["session-key"],
 		TmuxSession:  flags["tmux-session"],
+		SpawnEnabled: flagBool(args, "--spawn-enabled"),
+		DefaultRepo:  flags["spawn-repo"],
+		SpawnRuntime: flags["spawn-runtime"],
 		RegisteredAt: now,
 	}
 	if err := c.store.Register(meta); err != nil {
@@ -628,8 +632,38 @@ func (c *context) cmdSend(args []string) int {
 				}
 			} else {
 				logActivation(c.store, c.agent, to, chainID, wakeDepth, "injection_failed", fmt.Sprintf("systemctl start %s failed", svcName))
-				// best-effort: systemctl start failed, fall back to default wake (Athena gateway)
-				c.doWake("")
+
+				// Auto-spawn: if agent has spawn metadata, fire work run in background (detached)
+				if metaErr == nil && meta.SpawnEnabled && meta.DefaultRepo != "" && meta.SpawnRuntime != "" {
+					if lockErr := c.store.AcquireSpawnLock(to); lockErr == nil {
+						workBin := resolveWorkBinary()
+						spawnArgs := []string{"run", body, "--repo", meta.DefaultRepo, "--runtime", meta.SpawnRuntime, "--citizen", to}
+						spawnCmd := execCommand(workBin, spawnArgs...)
+						spawnCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+						spawnCmd.Stdout = nil
+						spawnCmd.Stderr = nil
+						if startErr := spawnCmd.Start(); startErr == nil {
+							_ = c.store.WriteSpawnPID(to, spawnCmd.Process.Pid)
+							_ = c.store.UpdateCooldown(to)
+							logActivation(c.store, c.agent, to, chainID, wakeDepth, "delivered", "auto-spawn")
+							if !c.quiet {
+								fmt.Printf("wake: auto-spawned %s (chain: %s, pid: %d)\n", to, chainID, spawnCmd.Process.Pid)
+							}
+						} else {
+							_ = c.store.ReleaseSpawnLock(to)
+							logActivation(c.store, c.agent, to, chainID, wakeDepth, "injection_failed", "auto-spawn failed: "+startErr.Error())
+							c.doWake("")
+						}
+					} else {
+						logActivation(c.store, c.agent, to, chainID, wakeDepth, "injection_failed", "spawn already in progress")
+						if !c.quiet {
+							fmt.Fprintf(os.Stderr, "wake: spawn already in progress for %s\n", to)
+						}
+					}
+				} else {
+					// No spawn config — fall back to default wake (Athena gateway)
+					c.doWake("")
+				}
 			}
 		} else {
 			c.doWake("")
@@ -2141,7 +2175,8 @@ func parseFlags(args []string) map[string]string {
 				key == "loop" || key == "wait" || key == "idle" ||
 				key == "suspend-all" || key == "pause-external" || key == "kill-external" || key == "resume" || key == "status" || key == "set-budget" ||
 				key == "show" || key == "allow" || key == "deny" || key == "reset" ||
-				key == "today" || key == "week" {
+				key == "today" || key == "week" ||
+				key == "spawn-enabled" {
 				continue
 			}
 			flags[key] = args[i+1]
@@ -2172,6 +2207,7 @@ func flagPositional(args []string) []string {
 		"--suspend-all": true, "--pause-external": true, "--kill-external": true, "--resume": true, "--status": true, "--set-budget": true,
 		"--show": true, "--allow": true, "--deny": true, "--reset": true,
 		"--today": true, "--week": true,
+		"--spawn-enabled": true,
 	}
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {

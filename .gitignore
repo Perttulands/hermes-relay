@@ -12,3 +12,6 @@ ralph-*.log
 
 # Test artifacts
 /tmp/
+
+# Claude Code config
+.claude/
